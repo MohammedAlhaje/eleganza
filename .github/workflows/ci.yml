@@ -1,6 +1,5 @@
 name: CI
 
-# Enable Buildkit and let compose use it to speed up image building
 env:
   DOCKER_BUILDKIT: 1
   COMPOSE_DOCKER_CLI_BUILD: 1
@@ -29,10 +28,18 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version-file: '.python-version'
+
+      - name: Cache pre-commit
+        uses: actions/cache@v2
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+          restore-keys: |
+            pre-commit-${{ runner.os }}-
+
       - name: Run pre-commit
         uses: pre-commit/action@v3.0.1
 
-  # With no caching at all the entire ci process takes 3m to complete!
   pytest:
     runs-on: ubuntu-latest
 
@@ -57,3 +64,6 @@ jobs:
 
       - name: Tear down the Stack
         run: docker compose -f docker-compose.local.yml down
+
+
+        
