@@ -273,5 +273,5 @@ eleganza/media/
 
 .pytest_cache/
 .ipython/
-.env
-.envs/*
+# .env
+# .envs/*
