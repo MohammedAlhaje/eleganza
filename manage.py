@@ -30,3 +30,4 @@ if __name__ == "__main__":
     sys.path.append(str(current_path / "eleganza"))
 
     execute_from_command_line(sys.argv)
+
