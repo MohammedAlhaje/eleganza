@@ -22,6 +22,7 @@ urlpatterns = [
     path(settings.ADMIN_URL, admin.site.urls),
     # User management
     path("users/", include("eleganza.users.urls", namespace="users")),
+     path("test/", include("eleganza.test.urls", namespace="test")),
     path("accounts/", include("allauth.urls")),
     # Your stuff: custom urls includes go here
     # ...
