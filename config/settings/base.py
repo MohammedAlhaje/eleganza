@@ -87,6 +87,13 @@ THIRD_PARTY_APPS = [
 
 LOCAL_APPS = [
     "eleganza.users",
+    "eleganza.promotions",
+    "eleganza.payments",
+    "eleganza.orders",
+    "eleganza.logistics",
+    "eleganza.analytics",
+    "eleganza.catalog",
+    "eleganza.vendors",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
