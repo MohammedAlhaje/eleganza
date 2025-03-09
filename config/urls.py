@@ -23,25 +23,23 @@ urlpatterns = [
     # User management
     path("users/", include("eleganza.users.urls", namespace="users")),
     path("accounts/", include("allauth.urls")),
-    
     # Your stuff: custom urls includes go here
     # <...
-    #vendors
-    path("vendors/", include("eleganza.vendors.urls", namespace="vendors")),
-    #catalog
-    path("catalog/", include("eleganza.catalog.urls", namespace="catalog")),
-    #analytics
-    path("analytics/", include("eleganza.analytics.urls", namespace="analytics")),
-    #logistics
-    path("logistics/", include("eleganza.logistics.urls", namespace="logistics")),
-    #orders
-    path("orders/", include("eleganza.orders.urls", namespace="orders")),
-    #payments
-    path("payments/", include("eleganza.payments.urls", namespace="payments")),
-    #promotions
-    path("promotions/", include("eleganza.promotions.urls", namespace="promotions")),
-    #...../>
-    
+    # vendors
+    # path("vendors/", include("eleganza.vendors.urls", namespace="vendors")),
+    # #catalog
+    # path("catalog/", include("eleganza.catalog.urls", namespace="catalog")),
+    # #analytics
+    # path("analytics/", include("eleganza.analytics.urls", namespace="analytics")),
+    # #logistics
+    # path("logistics/", include("eleganza.logistics.urls", namespace="logistics")),
+    # #orders
+    # path("orders/", include("eleganza.orders.urls", namespace="orders")),
+    # #payments
+    # path("payments/", include("eleganza.payments.urls", namespace="payments")),
+    # #promotions
+    # path("promotions/", include("eleganza.promotions.urls", namespace="promotions")),
+    # #...../>
     # Media files
     *static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT),
 ]
