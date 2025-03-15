@@ -11,3 +11,5 @@ class UsersConfig(AppConfig):
     def ready(self):
         with contextlib.suppress(ImportError):
             import eleganza.users.signals  # noqa: F401
+
+    

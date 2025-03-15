@@ -12,3 +12,8 @@ REDIS_URL=redis://redis:6379/0
 # Flower
 CELERY_FLOWER_USER=debug
 CELERY_FLOWER_PASSWORD=debug
+
+
+# Django
+FIELD_ENCRYPTION_KEY=sbrqXWJ0J4IAwOLCGrMX2mwd2r-uoZ7XZi4tAIWNB08=
+# ------------------------------------------------------------------------------

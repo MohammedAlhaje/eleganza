@@ -12,9 +12,31 @@ APPS_DIR = BASE_DIR / "eleganza"
 env = environ.Env()
 
 READ_DOT_ENV_FILE = env.bool("DJANGO_READ_DOT_ENV_FILE", default=False)
+
 if READ_DOT_ENV_FILE:
     # OS environment variables take precedence over variables from .env
     env.read_env(str(BASE_DIR / ".env"))
+
+
+# Encrypted Fields
+from cryptography.fernet import Fernet
+from django.core.exceptions import ImproperlyConfigured
+
+# Generate a key or use environment variable
+FIELD_ENCRYPTION_KEY = env("FIELD_ENCRYPTION_KEY", default=None)
+DEBUG = True
+# If no key provided in environment, generate one for development
+if FIELD_ENCRYPTION_KEY is None and DEBUG:
+    FIELD_ENCRYPTION_KEY = Fernet.generate_key().decode()
+    print(
+        "WARNING: Using generated FIELD_ENCRYPTION_KEY. This should only be used in development."
+    )
+elif FIELD_ENCRYPTION_KEY is None and not DEBUG:
+    raise ImproperlyConfigured(
+        "FIELD_ENCRYPTION_KEY is required for production. "
+        "Generate one with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
+    )
+
 
 # GENERAL
 # ------------------------------------------------------------------------------
@@ -83,6 +105,7 @@ THIRD_PARTY_APPS = [
     "rest_framework.authtoken",
     "corsheaders",
     "drf_spectacular",
+    "phonenumber_field",
 ]
 
 LOCAL_APPS = [
@@ -113,6 +136,13 @@ AUTHENTICATION_BACKENDS = [
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#auth-user-model
 AUTH_USER_MODEL = "users.User"
+
+ACCOUNT_USERNAME_MIN_LENGTH = 3  # Set a minimum length for usernames
+# ACCOUNT_EMAIL_REQUIRED = True         # Match your model's email requirements
+# ACCOUNT_USERNAME_REQUIRED = False     # Optional (if using email-only auth)
+# ACCOUNT_AUTHENTICATION_METHOD = 'email'  # If using email-based auth
+# ACCOUNT_EMAIL_VERIFICATION = 'mandatory' # Leverage your is_email_verified field
+
 # https://docs.djangoproject.com/en/dev/ref/settings/#login-redirect-url
 LOGIN_REDIRECT_URL = "users:redirect"
 # https://docs.djangoproject.com/en/dev/ref/settings/#login-url
