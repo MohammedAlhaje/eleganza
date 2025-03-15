@@ -13,29 +13,10 @@ env = environ.Env()
 
 READ_DOT_ENV_FILE = env.bool("DJANGO_READ_DOT_ENV_FILE", default=False)
 
+
 if READ_DOT_ENV_FILE:
     # OS environment variables take precedence over variables from .env
     env.read_env(str(BASE_DIR / ".env"))
-
-
-# Encrypted Fields
-from cryptography.fernet import Fernet
-from django.core.exceptions import ImproperlyConfigured
-
-# Generate a key or use environment variable
-FIELD_ENCRYPTION_KEY = env("FIELD_ENCRYPTION_KEY", default=None)
-DEBUG = True
-# If no key provided in environment, generate one for development
-if FIELD_ENCRYPTION_KEY is None and DEBUG:
-    FIELD_ENCRYPTION_KEY = Fernet.generate_key().decode()
-    print(
-        "WARNING: Using generated FIELD_ENCRYPTION_KEY. This should only be used in development."
-    )
-elif FIELD_ENCRYPTION_KEY is None and not DEBUG:
-    raise ImproperlyConfigured(
-        "FIELD_ENCRYPTION_KEY is required for production. "
-        "Generate one with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
-    )
 
 
 # GENERAL
@@ -106,6 +87,8 @@ THIRD_PARTY_APPS = [
     "corsheaders",
     "drf_spectacular",
     "phonenumber_field",
+    "allauth.socialaccount.providers.google",
+    "allauth.socialaccount.providers.facebook",
 ]
 
 LOCAL_APPS = [
@@ -136,18 +119,10 @@ AUTHENTICATION_BACKENDS = [
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#auth-user-model
 AUTH_USER_MODEL = "users.User"
-
-ACCOUNT_USERNAME_MIN_LENGTH = 3  # Set a minimum length for usernames
-# ACCOUNT_EMAIL_REQUIRED = True         # Match your model's email requirements
-# ACCOUNT_USERNAME_REQUIRED = False     # Optional (if using email-only auth)
-# ACCOUNT_AUTHENTICATION_METHOD = 'email'  # If using email-based auth
-# ACCOUNT_EMAIL_VERIFICATION = 'mandatory' # Leverage your is_email_verified field
-
 # https://docs.djangoproject.com/en/dev/ref/settings/#login-redirect-url
 LOGIN_REDIRECT_URL = "users:redirect"
 # https://docs.djangoproject.com/en/dev/ref/settings/#login-url
 LOGIN_URL = "account_login"
-
 # PASSWORDS
 # ------------------------------------------------------------------------------
 # https://docs.djangoproject.com/en/dev/ref/settings/#password-hashers
@@ -347,7 +322,7 @@ CELERY_WORKER_HIJACK_ROOT_LOGGER = False
 # ------------------------------------------------------------------------------
 ACCOUNT_ALLOW_REGISTRATION = env.bool("DJANGO_ACCOUNT_ALLOW_REGISTRATION", True)
 # https://docs.allauth.org/en/latest/account/configuration.html
-ACCOUNT_LOGIN_METHODS = {"username"}
+ACCOUNT_LOGIN_METHODS = {"username","email"}
 # https://docs.allauth.org/en/latest/account/configuration.html
 ACCOUNT_EMAIL_REQUIRED = True
 # https://docs.allauth.org/en/latest/account/configuration.html
@@ -391,3 +366,51 @@ SPECTACULAR_SETTINGS = {
 }
 # Your stuff...
 # ------------------------------------------------------------------------------
+
+SOCIALACCOUNT_PROVIDERS = {
+    "google": {
+        "SCOPE": ["profile", "email"],
+        "AUTH_PARAMS": {"access_type": "online"},
+        "OAUTH_PKCE_ENABLED": True,
+        "APP": {
+            "client_id": env("GOOGLE_CLIENT_ID", default=""),  # From .env
+            "secret": env("GOOGLE_CLIENT_SECRET", default=""), # From .env
+            "key": ""
+        }
+    },
+    "facebook": {
+        "METHOD": "oauth2",
+        "SDK_URL": "//connect.facebook.net/{locale}/sdk.js",
+        "SCOPE": ["email", "public_profile"],
+        "AUTH_PARAMS": {"auth_type": "reauthenticate"},
+        "INIT_PARAMS": {"cookie": True},
+        "FIELDS": [
+            "id",
+            "first_name",
+            "last_name",
+            "email",
+            "picture",
+        ],
+        "EXCHANGE_TOKEN": True,
+        "VERIFIED_EMAIL": True,
+        "VERSION": "v13.0",
+        "APP": {
+            "client_id": env("FACEBOOK_APP_ID", default=""),
+            "secret": env("FACEBOOK_APP_SECRET", default=""),
+            "key": ""
+        }
+    }
+}
+
+
+
+
+FIELD_ENCRYPTION_KEY = env("FIELD_ENCRYPTION_KEY", default=None)
+
+LANGUAGES = [
+    ('ar', 'Arabic'),
+    ('en', 'English'),
+    # Add other languages
+]
+
+CURRENCIES = ('LYD', 'USD', 'EUR' )  # Limit to specific currencies if desired

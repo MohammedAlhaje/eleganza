@@ -2,22 +2,17 @@ import os
 from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator
 import uuid
+
+# Avatar validation rules
 class AvatarConfig:
     """Central configuration for avatar validation rules"""
     ALLOWED_UPLOAD_EXTENSIONS = ['jpg', 'jpeg', 'png','webp']  # What users can upload
-    OUTPUT_EXTENSION = 'webp'                            # What we store
+    OUTPUT_EXTENSION = 'webp' # What we store // TODO: Implement conversion
     MAX_SIZE_MB = 2
     MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024
 
 def validate_avatar(image):
-    """Validates avatar files using AvatarConfig"""
-    # Size validation
-    if image.size > AvatarConfig.MAX_SIZE_BYTES:
-        raise ValidationError(
-            f"Max file size is {AvatarConfig.MAX_SIZE_MB}MB. "
-            f"Your file: {image.size/1024/1024:.1f}MB"
-        )
-    
+
     # Extension validation
     ext = os.path.splitext(image.name)[1][1:].lower()
     if ext not in AvatarConfig.ALLOWED_UPLOAD_EXTENSIONS:

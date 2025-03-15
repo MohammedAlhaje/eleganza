@@ -30,7 +30,6 @@ drf-spectacular==0.28.0  # https://github.com/tfranzel/drf-spectacular
 
 # Additional Django Packages
 django-phonenumber-field==8.0.0         # https://github.com/stefanfoulis/django-phonenumber-field
-phonenumbers==8.13.0                    # https://github.com/daviddrysdale/python-phonenumbers
 django-encrypted-model-fields==0.6.5    # https://pypi.org/project/django-encrypted-model-fields/
 django-countries==7.6.1                 # https://github.com/SmileyChris/django-countries
 phonenumbers==9.0.0  # https://github.com/daviddrysdale/python-phonenumbers
@@ -40,3 +39,5 @@ django-money==3.5.3           # https://github.com/django-money/django-money
 py-moneyed==3.0               # https://github.com/limist/py-moneyed
 pycountry==24.6.1             # https://github.com/flyingcircusio/pycountry
 setuptools==76.0.0            # https://pypi.org/project/setuptools/
+
+PyJWT==2.10.1  # https://github.com/jpadilla/pyjwt

@@ -5,7 +5,13 @@ DJANGO_SETTINGS_MODULE=config.settings.production
 DJANGO_SECRET_KEY=ofnQfBmBOqDtcXttDrUr45NYHOlRLz9lE5gkrqlNmuICVSDVYKXncftE4OPzEQie
 DJANGO_ADMIN_URL=nrGYPO3SaGlOk02tpW7paC7HjD7j3QrN/
 DJANGO_ALLOWED_HOSTS=.eleganza.ly
-FIELD_ENCRYPTION_KEY=sbrqXWJ0J4IAwOLCGrMX2mwd2r-uoZ7XZi4tAIWNB08=
+FIELD_ENCRYPTION_KEY=3SE1TMXg7CG3RexNKtH4cCuvc3pH1IU9N84O7pK3Ca0=
+
+GOOGLE_CLIENT_ID=1056615643226-et49vp8dmfspvv02aottopjapa18kgsk.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=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
+
+FACEBOOK_APP_ID=your-app-id-from-facebook
+FACEBOOK_APP_SECRET=your-app-secret-from-facebook
 
 # Security
 # ------------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-from django.contrib.auth.models import AbstractUser
+from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.db import models
 from django.core.exceptions import ValidationError
 from django.utils import timezone
@@ -9,88 +9,110 @@ from django_countries.fields import CountryField
 from djmoney.models.fields import CurrencyField
 from datetime import date
 from .validators import rename_avatar, validate_avatar, get_file_extension_validator
+from django.utils.translation import gettext_lazy as _
+from django.urls import reverse
+from django.conf import settings
+from djmoney.settings import CURRENCY_CHOICES
+
+
+class UserManager(BaseUserManager):
+    """Custom user manager with soft deletion support"""
+    def get_queryset(self):
+        return super().get_queryset().filter(deleted_at__isnull=True)
+
+    def create_user(self, username, email=None, password=None, **extra_fields):
+        extra_fields.setdefault('is_staff', False)
+        extra_fields.setdefault('is_superuser', False)
+        return self._create_user(username, email, password, **extra_fields)
+
+    def create_superuser(self, username, email=None, password=None, **extra_fields):
+        extra_fields.setdefault('is_staff', True)
+        extra_fields.setdefault('is_superuser', True)
+
+        if extra_fields.get('is_staff') is not True:
+            raise ValueError('Superuser must have is_staff=True.')
+        if extra_fields.get('is_superuser') is not True:
+            raise ValueError('Superuser must have is_superuser=True.')
+
+        return self._create_user(username, email, password, **extra_fields)
+
+    def _create_user(self, username, email, password, **extra_fields):
+        if not username:
+            raise ValueError('The given username must be set')
+        email = self.normalize_email(email)
+        user = self.model(username=username, email=email, **extra_fields)
+        user.set_password(password)
+        user.save(using=self._db)
+        return user
+
 
 class User(AbstractUser):
-    """
-    User model extending Django's built-in AbstractUser.
-    Inherits core fields like `username`, `password`, and `is_active`.
-    Adds additional fields for enhanced user profile management, security, and preferences.
-    """
-
+    """Custom User model with enhanced fields and soft deletion"""
     # Core identification fields
-    email = models.EmailField(unique=True, help_text="Unique email address used for login and communication.")
-    phone = PhoneNumberField(unique=True, blank=True, null=True, help_text="User's phone number in international format.")
 
-    # Verification fields (for security and compliance)
-    is_email_verified = models.BooleanField(
-        default=False,
-        help_text="Flag indicating if the user's email address has been verified."
+    display_name = models.CharField(max_length=150, blank=True, null=True)
+
+    phone = PhoneNumberField(
+        unique=False, blank=True, null=True,
+        help_text=_("User's phone number in international format.")
     )
-    email_verified_at = models.DateTimeField(
-        blank=True, null=True,
-        help_text="Timestamp when the user's email was verified."
-    )
+
+    # Phone verification fields
     is_phone_verified = models.BooleanField(
         default=False,
-        help_text="Flag indicating if the user's phone number has been verified."
+        help_text=_("Flag indicating if the user's phone number has been verified.")
     )
     phone_verified_at = models.DateTimeField(
         blank=True, null=True,
-        help_text="Timestamp when the user's phone number was verified."
+        help_text=_("Timestamp when the user's phone number was verified.")
     )
 
-    # Consent fields (for GDPR and privacy compliance)
+    # Consent fields
     data_consent = models.BooleanField(
         default=False,
-        help_text="Flag indicating if the user has consented to data processing."
+        help_text=_("Flag indicating if the user has consented to data processing.")
     )
     data_consent_at = models.DateTimeField(
         blank=True, null=True,
-        help_text="Timestamp when the user gave data processing consent."
+        help_text=_("Timestamp when the user gave data processing consent.")
     )
     marketing_consent = models.BooleanField(
         default=False,
-        help_text="Flag indicating if the user has consented to receive marketing communications."
+        help_text=_("Flag indicating if the user has consented to receive marketing communications.")
     )
     marketing_consent_at = models.DateTimeField(
         blank=True, null=True,
-        help_text="Timestamp when the user gave marketing consent."
+        help_text=_("Timestamp when the user gave marketing consent.")
     )
 
     # User preferences
     timezone = TimeZoneField(
         default='UTC',
-        help_text="User's preferred timezone for displaying dates and times."
+        help_text=_("User's preferred timezone for displaying dates and times.")
     )
     language = models.CharField(
         max_length=10, default='en',
-        help_text="User's preferred language (ISO 639-1 code)."
+        choices=settings.LANGUAGES, 
+        help_text=_("User's preferred language (ISO 639-1 code).")
     )
     default_currency = CurrencyField(
         default='USD',
-        help_text="User's preferred currency for transactions and pricing."
+        choices=CURRENCY_CHOICES,
+        help_text=_("User's preferred currency for transactions and pricing.")
     )
 
-    # Security-related fields
-    mfa_enabled = models.BooleanField(
-        default=False,
-        help_text="Flag indicating if multi-factor authentication (MFA) is enabled for the user."
-    )
-    mfa_secret = EncryptedCharField(
-        max_length=64, blank=True, null=True,
-        help_text="Encrypted secret key used for MFA (e.g., TOTP)."
-    )
+    # Security fields
     failed_login_attempts = models.IntegerField(
         default=0,
-        help_text="Number of consecutive failed login attempts."
+        help_text=_("Number of consecutive failed login attempts.")
     )
     locked_until = models.DateTimeField(
         blank=True, null=True,
-        help_text="Timestamp until which the account is locked due to too many failed login attempts."
+        help_text=_("Timestamp until which the account is locked.")
     )
     password_updated_at = models.DateTimeField(
         blank=True, null=True,
-        help_text="Timestamp of the last password change."
+        help_text=_("Timestamp of the last password change.")
     )
 
     # Profile fields
@@ -98,151 +120,180 @@ class User(AbstractUser):
         upload_to=rename_avatar,
         blank=True,
         null=True,
-        default="avatars/default.webp",  # Use WebP for default image
+        default="avatars/default.webp",
         validators=[validate_avatar, get_file_extension_validator()],
-        help_text="User's profile picture or avatar. Allowed formats: JPG, JPEG, PNG, WEBP. Max size: 2MB."
+        help_text=_("Profile picture. Formats: JPG/PNG/WEBP. Max 2MB.")
     )
-
     date_of_birth = models.DateField(
         blank=True, null=True,
-        help_text="User's date of birth for age verification and personalization."
+        help_text=_("Date of birth for age verification.")
     )
 
-        # Audit fields (for tracking user activity and changes)
-    created_at = models.DateTimeField(
-        auto_now_add=True,
-        help_text="Timestamp when the user account was created."
-    )
-    updated_at = models.DateTimeField(
-        auto_now=True,
-        help_text="Timestamp when the user account was last updated."
-    )
+    # Audit fields
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
     deleted_at = models.DateTimeField(
         blank=True, null=True,
-        help_text="Timestamp for soft deletion of the user account."
+        help_text=_("Timestamp for soft deletion.")
     )
 
-    # Versioning and concurrency control
+    # Versioning
     version = models.IntegerField(
         default=0,
         editable=False,
-        help_text="Version number for tracking changes and handling concurrency."
+        help_text=_("Version number for concurrency control.")
     )
 
+    # Managers
+    objects = UserManager()
+    all_objects = models.Manager()  # Includes deleted users
 
     def clean(self):
-        """
-        Custom validation logic for the model.
-        Ensures that the date of birth is in the past.
-        """
+        """Comprehensive validation for user data"""
         super().clean()
 
+        # Date of birth validation
         if self.date_of_birth:
-            age = date.today().year - self.date_of_birth.year
+            today = timezone.now().date()
+            if self.date_of_birth >= today:
+                raise ValidationError(
+                    {'date_of_birth': _('Date of birth must be in the past.')}
+                )
+            age = today.year - self.date_of_birth.year
+            if (today.month, today.day) < (self.date_of_birth.month, self.date_of_birth.day):
+                age -= 1
             if age < 13:
-                raise ValidationError("Users must be at least 13 years old.")
-  
-        if self.date_of_birth and self.date_of_birth >= timezone.now().date():
-            raise ValidationError({'date_of_birth': 'Date of birth must be in the past.'})
+                raise ValidationError(
+                    _("Users must be at least 13 years old."),
+                    code='underage'
+                )
+
+        # Avatar validation
+        if self.avatar:
+            validate_avatar(self.avatar)
+
+    def delete(self, *args, **kwargs):
+        """Soft delete implementation"""
+        self.deleted_at = timezone.now()
+        self.is_active = False  # deactivate the user
+        self.save()
+
+    def set_password(self, raw_password):
+        """Track password changes for existing users only"""
+        super().set_password(raw_password)
+        self.password_updated_at = timezone.now()
+
+        # Only create history if user already exists in DB
+        if self.pk:
+            PasswordHistory.objects.create(
+                user=self,
+                password_hash=self.password
+            )
 
     def save(self, *args, **kwargs):
-        """
-        Overrides the save method to ensure validation is run before saving.
-        """
-        self.full_clean()  # Runs model validation before saving
+        """Create initial password history for new users"""
+        is_new = self.pk is None  # Check if creating new user
         super().save(*args, **kwargs)
 
+        # Create initial password history after first save
+        if is_new:
+            PasswordHistory.objects.create(
+                user=self,
+                password_hash=self.password
+            )
+
+    def get_absolute_url(self):
+        """Returns the URL to access a particular user instance."""
+        return reverse('users:detail', kwargs={'username': self.username})
 
     class Meta:
         indexes = [
             models.Index(fields=['email']),
             models.Index(fields=['phone']),
             models.Index(fields=['is_active', 'deleted_at']),
+            models.Index(fields=['created_at']),
         ]
+        verbose_name = _('user')
+        verbose_name_plural = _('users')
 
 
 class PasswordHistory(models.Model):
-    """
-    Stores historical password hashes for a user.
-    Used to enforce password reuse policies and enhance security.
-    """
-
+    """Secure password history tracking"""
     user = models.ForeignKey(
-        User, on_delete=models.CASCADE, related_name='password_history',
-        help_text="User associated with this password history entry."
+        User,
+        on_delete=models.CASCADE,
+        related_name='password_history',
+        help_text=_("Associated user account.")
     )
     password_hash = models.CharField(
         max_length=255,
-        help_text="Hashed representation of the user's password."
+        help_text=_("Securely hashed password representation.")
     )
     created_at = models.DateTimeField(
         auto_now_add=True,
-        help_text="Timestamp when this password was set."
+        help_text=_("Timestamp when password was set.")
     )
 
     class Meta:
-        unique_together = ('user', 'password_hash')  # Prevents duplicate password hashes for the same user.
-        ordering = ['-created_at']  # Orders entries by creation date (newest first).
+        unique_together = ('user', 'password_hash')
+        ordering = ['-created_at']
+        verbose_name = _('password history')
+        verbose_name_plural = _('password histories')
 
 
 class Address(models.Model):
-    """
-    Represents a physical address associated with a user.
-    Used for shipping, billing, and other location-based purposes.
-    """
-
+    """Enhanced address model with proper validation"""
     user = models.ForeignKey(
-        User, on_delete=models.CASCADE, related_name='addresses',
-        help_text="User associated with this address."
+        User,
+        on_delete=models.CASCADE,
+        related_name='addresses',
+        help_text=_("Associated user account.")
     )
     street = models.CharField(
         max_length=255,
-        help_text="Street name and number."
+        help_text=_("Street name and number.")
     )
     city = models.CharField(
         max_length=100,
-        help_text="City or locality name."
+        help_text=_("City or locality name.")
     )
     state = models.CharField(
         max_length=100,
-        help_text="State, province, or region."
+        help_text=_("State, province, or region.")
     )
     postal_code = models.CharField(
         max_length=20,
-        help_text="Postal or ZIP code for the address."
+        help_text=_("Postal or ZIP code.")
     )
     country = CountryField(
-        help_text="Country where the address is located."
+        help_text=_("Country location.")
     )
     is_default = models.BooleanField(
         default=False,
-        help_text="Flag indicating if this is the user's default address."
+        help_text=_("Default address flag.")
     )
     version = models.IntegerField(
         default=0,
-        help_text="Version number for tracking changes to the address."
+        help_text=_("Version number for changes.")
     )
     deleted_at = models.DateTimeField(
         null=True, blank=True,
-        help_text="Timestamp for soft deletion of the address."
+        help_text=_("Soft deletion timestamp.")
     )
 
     def clean(self):
-        """
-        Custom validation logic for the model.
-        Ensures that the postal code is alphanumeric.
-        """
-        # In Address.clean()
-
+        """Enhanced postal code validation"""
         super().clean()
-        if self.postal_code and not self.postal_code.replace(' ', '').isalnum():
-            raise ValidationError('Postal code can only contain letters/numbers.')
+        if self.postal_code:
+            cleaned_pc = self.postal_code.replace(' ', '').replace('-', '')
+            if not cleaned_pc.isalnum():
+                raise ValidationError(
+                    _('Postal code contains invalid characters.'),
+                    code='invalid_postal_code'
+                )
 
     def save(self, *args, **kwargs):
-        """
-        Overrides the save method to ensure validation is run before saving.
-        """
-        self.full_clean()  # Runs model validation before saving
+        self.full_clean()
         super().save(*args, **kwargs)
 
     class Meta:
@@ -253,3 +304,5 @@ class Address(models.Model):
                 name='unique_default_address'
             )
         ]
+        verbose_name = _('address')
+        verbose_name_plural = _('addresses')
