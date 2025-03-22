@@ -13,7 +13,7 @@ from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
 
 from eleganza.users.forms import UserAdminChangeForm
-from eleganza.users.models import User
+from eleganza.users.model import User
 from eleganza.users.tests.factories import UserFactory
 from eleganza.users.views import UserRedirectView
 from eleganza.users.views import UserUpdateView

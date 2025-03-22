@@ -1,7 +1,7 @@
 from django.urls import resolve
 from django.urls import reverse
 
-from eleganza.users.models import User
+from eleganza.users.model import User
 
 
 def test_user_detail(user: User):

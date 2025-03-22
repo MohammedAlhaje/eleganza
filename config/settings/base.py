@@ -324,7 +324,7 @@ ACCOUNT_ALLOW_REGISTRATION = env.bool("DJANGO_ACCOUNT_ALLOW_REGISTRATION", True)
 # https://docs.allauth.org/en/latest/account/configuration.html
 ACCOUNT_LOGIN_METHODS = {"username","email"}
 # https://docs.allauth.org/en/latest/account/configuration.html
-ACCOUNT_EMAIL_REQUIRED = True
+ACCOUNT_SIGNUP_FIELDS = ['email*', 'username', 'password1', 'password2']
 # https://docs.allauth.org/en/latest/account/configuration.html
 ACCOUNT_EMAIL_VERIFICATION = "mandatory"
 # https://docs.allauth.org/en/latest/account/configuration.html
@@ -414,3 +414,5 @@ LANGUAGES = [
 ]
 
 CURRENCIES = ('LYD', 'USD', 'EUR' )  # Limit to specific currencies if desired
+# Security settings
+PASSWORD_HISTORY_LIMIT = 5  # NIST-compliant recommendation
