@@ -31,12 +31,12 @@ TIME_ZONE = "UTC"
 # https://docs.djangoproject.com/en/dev/ref/settings/#language-code
 LANGUAGE_CODE = "en-us"
 # https://docs.djangoproject.com/en/dev/ref/settings/#languages
-# from django.utils.translation import gettext_lazy as _
-# LANGUAGES = [
-#     ('en', _('English')),
-#     ('fr-fr', _('French')),
-#     ('pt-br', _('Portuguese')),
-# ]
+from django.utils.translation import gettext_lazy as _
+LANGUAGES = [
+    ('ar', _('Arabic')),
+    ('en', _('English')),
+]
+
 # https://docs.djangoproject.com/en/dev/ref/settings/#site-id
 SITE_ID = 1
 # https://docs.djangoproject.com/en/dev/ref/settings/#use-i18n
@@ -92,14 +92,11 @@ THIRD_PARTY_APPS = [
 ]
 
 LOCAL_APPS = [
+    "eleganza.core",
     "eleganza.users",
-    "eleganza.promotions",
-    "eleganza.payments",
+    "eleganza.products",
     "eleganza.orders",
-    "eleganza.logistics",
-    "eleganza.analytics",
-    "eleganza.catalog",
-    "eleganza.vendors",
+    "eleganza.payments",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
@@ -403,16 +400,24 @@ SOCIALACCOUNT_PROVIDERS = {
 }
 
 
+#------------------------------------------------------------------------------------
+# Currency configuration
+
+CURRENCY_CHOICES = [('LYD', _('Libyan Dinar'))] # Add more currencies as needed
+DEFAULT_CURRENCY = "LYD" # Set the default currency
+
+#------------------------------------------------------------------------------------
+
+
+
+
+#------------------------------------------------------------------------------------
+# Security Settings
+PASSWORD_HISTORY_LIMIT = 5  # Number of previous passwords to remember
+
+#------------------------------------------------------------------------------------
+
 
 
 FIELD_ENCRYPTION_KEY = env("FIELD_ENCRYPTION_KEY", default=None)
 
-LANGUAGES = [
-    ('ar', 'Arabic'),
-    ('en', 'English'),
-    # Add other languages
-]
-
-CURRENCIES = ('LYD', 'USD', 'EUR' )  # Limit to specific currencies if desired
-# Security settings
-PASSWORD_HISTORY_LIMIT = 5  # NIST-compliant recommendation
