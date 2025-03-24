@@ -109,31 +109,36 @@ class User(AbstractUser, SoftDeleteModel, TimeStampedModel):
                 name='unique_non_empty_username',
                 condition=models.Q(username__isnull=False)),
         ]
-
     def set_password(self, raw_password):
         """Override password setting with history validation"""
-        max_history = getattr(settings, 'PASSWORD_HISTORY_LIMIT', 5)
-        
-        # Prevent reusing current password
-        if self.check_password(raw_password):
-            raise ValidationError(_("New password must differ from current password."))
-        
-        # Check against password history
-        last_passwords = self.password_history.order_by('-created_at')[:max_history]
-        for entry in last_passwords:
-            if check_password(raw_password, entry.password):
-                raise ValidationError(
-                    _("Cannot reuse any of your last %(count)d passwords.") % {'count': max_history}
-                )
+        if self.pk:  # Only check history for existing users
+            max_history = getattr(settings, 'PASSWORD_HISTORY_LIMIT', 5)
+            
+            # Prevent reusing current password
+            if self.check_password(raw_password):
+                raise ValidationError(_("New password must differ from current password."))
+            
+            # Check against password history
+            last_passwords = self.password_history.order_by('-created_at')[:max_history]
+            for entry in last_passwords:
+                if check_password(raw_password, entry.password):
+                    raise ValidationError(
+                        _("Cannot reuse any of your last %(count)d passwords.") % {'count': max_history}
+                    )
         
         super().set_password(raw_password)
 
     def save(self, *args, **kwargs):
-        if self.username:
-            self.username = self.username.strip()
-            if self.username == "":
-                self.username = None
+        """Handle initial password history creation"""
+        creating = self.pk is None
         super().save(*args, **kwargs)
+        
+        # For new users, create initial password history entry
+        if creating:
+            PasswordHistory.objects.create(
+                user=self,
+                password=self.password
+            )
 
     def clean(self):
         super().clean()
