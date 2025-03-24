@@ -12,7 +12,7 @@ from timezone_field import TimeZoneField
 from imagekit.models import ProcessedImageField
 from imagekit.processors import ResizeToFill
 from eleganza.core.models import SoftDeleteModel, TimeStampedModel
-from .validators import avatar_validator, secure_avatar_name
+from .validators import AvatarValidator, avatar_path
 from django.contrib.auth.validators import UnicodeUsernameValidator
 
 class SpaceAllowedUsernameValidator(UnicodeUsernameValidator):
@@ -180,11 +180,11 @@ class UserProfile(models.Model):
     
     avatar = ProcessedImageField(
         verbose_name=_("Avatar"),
-        upload_to=secure_avatar_name,
+        upload_to=avatar_path,
         processors=[ResizeToFill(400, 400)],
         format='WEBP',
         options={'quality': 85},
-        validators=[avatar_validator],
+        validators=[AvatarValidator()],
         blank=True,
         null=True,
         help_text=_("User profile image (WEBP format)")
