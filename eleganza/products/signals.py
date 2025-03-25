@@ -1,53 +1,67 @@
-# products/signals.py
-from django.db.models.signals import pre_save, post_save, pre_delete
+import logging
+from django.db import transaction
+from django.db.models.signals import (
+    post_save,
+    post_delete,
+    pre_save
+)
 from django.dispatch import receiver
-from .models import Product, ProductImage, ProductCategory
 from django.core.exceptions import ValidationError
-from django.utils.text import slugify
+from .models import (
+    Product,
+    ProductReview,
+    Inventory,
+    ProductImage
+)
 
-@receiver(pre_save, sender=Product)
-def product_pre_save(sender, instance, **kwargs):
-    """Automatically generate slug and validate pricing"""
-    if not instance.slug:
-        instance.slug = slugify(instance.name)
-    
-    # Ensure unique slug
-    if Product.objects.filter(slug=instance.slug).exclude(id=instance.id).exists():
-        instance.slug = f"{instance.slug}-{instance.sku}"
+logger = logging.getLogger(__name__)
 
-@receiver(post_save, sender=ProductImage)
-def handle_primary_image(sender, instance, **kwargs):
-    """Ensure only one primary image exists per product"""
+@receiver([post_save, post_delete], sender=ProductReview)
+def update_product_rating_stats(sender, instance, **kwargs):
+    """
+    Update product rating statistics when reviews change.
+    Handles both creation/deletion and approval status changes.
+    Uses atomic transaction for data consistency.
+    """
+    try:
+        with transaction.atomic():
+            logger.info(
+                f"Updating rating stats for product {instance.product_id}"
+            )
+            instance.product.update_rating_stats()
+    except Exception as e:
+        logger.error(
+            f"Failed updating rating stats for product {instance.product_id}: {str(e)}",
+            exc_info=True
+        )
+        raise
+
+@receiver(post_save, sender=Product)
+def create_inventory_for_new_product(sender, instance, created, **kwargs):
+    """
+    Automatically create inventory record for new products.
+    Ensures every product has an inventory tracking entry.
+    """
+    if created:
+        try:
+            Inventory.objects.create(product=instance)
+            logger.info(f"Created inventory for new product {instance.sku}")
+        except Exception as e:
+            logger.error(
+                f"Failed creating inventory for product {instance.sku}: {str(e)}",
+                exc_info=True
+            )
+            raise
+
+@receiver(pre_save, sender=ProductImage)
+def handle_primary_image_change(sender, instance, **kwargs):
+    """
+    Ensure only one primary image exists per product.
+    Automatically demotes previous primary image when new one is set.
+    """
     if instance.is_primary:
-        ProductImage.objects.filter(product=instance.product) \
-            .exclude(pk=instance.pk) \
-            .update(is_primary=False)
-
-@receiver(pre_save, sender=ProductCategory)
-def category_pre_save(sender, instance, **kwargs):
-    """Generate category slug and validate hierarchy"""
-    if not instance.slug:
-        instance.slug = slugify(instance.name)
-    
-    # Prevent circular parent relationships
-    if instance.parent and instance.parent.id == instance.id:
-        raise ValidationError("Category cannot be its own parent")
-
-@receiver(pre_delete, sender=Product)
-def product_pre_delete(sender, instance, **kwargs):
-    """
-    Handle product deletion:
-    - Cancel related orders
-    - Clear inventory reservations
-    """
-    from orders.models import OrderItem  # Avoid circular import
-    
-    # Cancel pending order items
-    OrderItem.objects.filter(
-        product=instance,
-        order__status__in=['pending', 'reserved']
-    ).update(status='cancelled')
-    
-    # Release reserved stock
-    instance.reserved_stock = 0
-    instance.save(update_fields=['reserved_stock'])
+        # Update existing primary images atomically
+        ProductImage.objects.filter(
+            product=instance.product,
+            is_primary=True
+        ).exclude(pk=instance.pk).update(is_primary=False)

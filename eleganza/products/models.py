@@ -1,59 +1,25 @@
-# products/models.py
-import os
-import uuid
 from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from django.core.validators import (
     MinValueValidator, 
     MaxValueValidator,
-    FileExtensionValidator
 )
 from django.core.exceptions import ValidationError
 from django.conf import settings
 from django.urls import reverse
-from django.db.models import Q, Avg, F
-from django.db.models.signals import post_save, post_delete
-from django.dispatch import receiver
+from django.db.models import Avg
 from eleganza.core.models import BaseModel
 from mptt.models import MPTTModel, TreeForeignKey
 from autoslug import AutoSlugField
-from django_extensions.db.models import TimeStampedModel
 from djmoney.models.fields import MoneyField
 from django_cleanup import cleanup
-from PIL import Image
-from io import BytesIO
-from django.core.files.uploadedfile import InMemoryUploadedFile
 from .validators import (
     ProductImageValidator,
     product_image_path,
     CategoryImageValidator,
     category_image_path
 )
-
-
-def validate_image_dimensions(image, max_width=2000, max_height=2000):
-    """Validate image dimensions using PIL"""
-    img = Image.open(image)
-    if img.width > max_width or img.height > max_height:
-        raise ValidationError(
-            _("Image dimensions too large. Max size: %(width)dx%(height)d") % {
-                'width': max_width,
-                'height': max_height
-            }
-        )
-
-def product_image_upload_path(instance, filename):
-    """Safe image upload path handling unsaved instances"""
-    ext = filename.split('.')[-1]
-    filename = f"{uuid.uuid4()}.{ext}"
-    product_id = instance.product.id if instance.product else 'unsaved'
-    return os.path.join(
-        'products',
-        str(product_id),
-        'images',
-        filename
-    )
 
 class ProductCategory(MPTTModel, BaseModel):
     """Hierarchical product category system with image validation"""
@@ -73,9 +39,11 @@ class ProductCategory(MPTTModel, BaseModel):
         help_text=_("Parent category for hierarchical organization")
     )
     slug = AutoSlugField(
-        populate_from='name',
+        populate_from='name',  # Critical for auto-generation
         unique=True,
-        verbose_name=_("URL-safe category identifier")
+        verbose_name=_("Product URL Slug"),
+        help_text=_("Unique URL identifier for the product"),
+        editable=True  # Must be True for admin forms
     )
     description = models.TextField(
         _("Description"),
@@ -129,10 +97,18 @@ class ActiveStockReservationManager(models.Manager):
 @cleanup.select
 class Product(BaseModel):
     """Core product model with enhanced validation"""
+    name = models.CharField(
+        _("Product Name"),
+        max_length=255,
+        db_index=True,
+        help_text=_("Full product name for display purposes")
+    )
     slug = AutoSlugField(
-        populate_from='name',
+        populate_from='name',  # Critical for auto-generation
         unique=True,
-        verbose_name=_("Product URL Slug")
+        verbose_name=_("Product URL Slug"),
+        help_text=_("Unique URL identifier for the product"),
+        editable=True  # Must be True for admin forms
     )
     sku = models.CharField(
         _("SKU"),
@@ -141,16 +117,12 @@ class Product(BaseModel):
         db_index=True,
         help_text=_("Unique stock keeping unit identifier")
     )
-    name = models.CharField(
-        _("Product Name"),
-        max_length=255,
-        db_index=True,
-        help_text=_("Full product name for display purposes")
-    )
+
     description = models.TextField(
         _("Description"),
         help_text=_("Detailed product description for customers")
     )
+    # Maintain single category relationship
     category = models.ForeignKey(
         ProductCategory,
         on_delete=models.SET_NULL,
@@ -158,7 +130,7 @@ class Product(BaseModel):
         related_name='products',
         verbose_name=_("Primary Category"),
         help_text=_("Main product category for navigation and filtering"),
-        db_index=True  # Added index
+        db_index=True
     )
     original_price = MoneyField(
         _("Original Price"),
@@ -181,7 +153,7 @@ class Product(BaseModel):
     )
     average_rating = models.DecimalField(
         _("Average Rating"),
-        max_digits=3,  # Fixed precision
+        max_digits=3,
         decimal_places=1,
         default=0.0,
         editable=False
@@ -191,21 +163,25 @@ class Product(BaseModel):
         default=0,
         editable=False
     )
-
+    is_active = models.BooleanField(
+        _("Active"),
+        default=True,
+        help_text=_("Designates whether this product should be treated as active.")
+    )
     class Meta:
         verbose_name = _("Product")
         verbose_name_plural = _("Products")
         ordering = ['-created_at']
-        constraints = [
-            models.CheckConstraint(
-                check=Q(selling_price_currency=F('original_price_currency')),
-                name="consistent_pricing_currency"
-            ),
-            models.CheckConstraint(
-                check=Q(selling_price_amount__lte=F('original_price_amount')),
-                name="selling_price_lte_original"
-            ),
-        ]
+        # constraints = [
+        #     models.CheckConstraint(
+        #         check=Q(selling_price_currency=F('original_price_currency')),
+        #         name="consistent_pricing_currency"
+        #     ),
+        #     models.CheckConstraint(
+        #         check=Q(selling_price_amount__lte=F('original_price_amount')),
+        #         name="selling_price_lte_original"
+        #     ),
+        # ]
         indexes = [
             models.Index(fields=['sku']),
             models.Index(fields=['name']),
@@ -247,6 +223,7 @@ class Inventory(models.Model):
     """Enhanced inventory tracking with safety checks"""
     product = models.OneToOneField(
         Product,
+        primary_key=True,
         on_delete=models.CASCADE,
         related_name='inventory'
     )
@@ -279,61 +256,6 @@ class Inventory(models.Model):
     @property
     def needs_restock(self):
         return self.stock_quantity <= self.low_stock_threshold
-
-class StockReservation(TimeStampedModel):
-    """Stock reservations with enhanced validation"""
-    inventory = models.ForeignKey(
-        Inventory,
-        on_delete=models.CASCADE,
-        related_name='reservations'
-    )
-    quantity = models.PositiveIntegerField(
-        _("Reserved Quantity"),
-        validators=[MinValueValidator(1)]
-    )
-    order = models.ForeignKey(
-        'orders.Order',
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name='stock_reservations'
-    )
-    expires_at = models.DateTimeField(
-        _("Expiration Date"),
-        help_text=_("When this reservation should be automatically released")
-    )
-    is_active = models.BooleanField(
-        _("Active"),
-        default=True,
-        help_text=_("Whether this reservation is still valid")
-    )
-
-    objects = ActiveStockReservationManager()
-    all_objects = models.Manager()
-
-    class Meta:
-        verbose_name = _("Stock Reservation")
-        verbose_name_plural = _("Stock Reservations")
-        indexes = [
-            models.Index(fields=['expires_at']),
-            models.Index(fields=['is_active']),
-        ]
-        constraints = [
-            models.CheckConstraint(
-                check=Q(quantity__lte=F('inventory__stock_quantity')),
-                name="reservation_quantity_le_stock"
-            )
-        ]
-
-    def __str__(self):
-        return f"Reservation for {self.inventory.product.name}"
-
-    def clean(self):
-        if self.quantity > self.inventory.stock_quantity:
-            raise ValidationError(
-                _("Reservation quantity exceeds available stock")
-            )
-        super().clean()
 
 @cleanup.select
 class ProductImage(BaseModel):

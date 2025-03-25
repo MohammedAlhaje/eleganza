@@ -109,6 +109,7 @@ class User(AbstractUser, SoftDeleteModel, TimeStampedModel):
                 name='unique_non_empty_username',
                 condition=models.Q(username__isnull=False)),
         ]
+        
     def set_password(self, raw_password):
         """Override password setting with history validation"""
         if self.pk:  # Only check history for existing users

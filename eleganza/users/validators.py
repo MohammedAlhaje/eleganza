@@ -1,8 +1,8 @@
-# users/validators.py
 from eleganza.core.validators import ImageTypeConfig, BaseImageValidator, secure_image_name
 
 class AvatarConfig(ImageTypeConfig):
     UPLOAD_PATH = 'avatars/'
+    ALLOWED_UPLOAD_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp']
     MAX_SIZE_MB = 2
     MAX_DIMENSION = 2000
 

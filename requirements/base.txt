@@ -1,51 +1,59 @@
-python-slugify==8.0.4  # https://github.com/un33k/python-slugify
-Pillow==11.1.0  # https://github.com/python-pillow/Pillow
-rcssmin==1.1.2  # https://github.com/ndparker/rcssmin
-argon2-cffi==23.1.0  # https://github.com/hynek/argon2_cffi
-whitenoise==6.9.0  # https://github.com/evansd/whitenoise
-redis==5.2.1  # https://github.com/redis/redis-py
-hiredis==3.1.0  # https://github.com/redis/hiredis-py
-celery==5.4.0  # pyup: < 6.0  # https://github.com/celery/celery
-django-celery-beat==2.7.0  # https://github.com/celery/django-celery-beat
-flower==2.0.1  # https://github.com/mher/flower
-uvicorn[standard]==0.34.0  # https://github.com/encode/uvicorn
-uvicorn-worker==0.3.0  # https://github.com/Kludex/uvicorn-worker
+python-slugify==8.0.4  # Library to generate slugs from text (https://github.com/un33k/python-slugify)
+Pillow==11.1.0  # Image processing library (https://github.com/python-pillow/Pillow)
+rcssmin==1.1.2  # CSS minification for Django Compressor (https://github.com/ndparker/rcssmin)
+argon2-cffi==23.1.0  # Password hashing library (https://github.com/hynek/argon2_cffi)
+whitenoise==6.9.0  # Serve static files in Django (https://github.com/evansd/whitenoise)
+redis==5.2.1  # Python client for Redis (https://github.com/redis/redis-py)
+hiredis==3.1.0  # Optimized Redis parser (https://github.com/redis/hiredis-py)
+celery==5.4.0  # Distributed task queue (https://github.com/celery/celery)
+django-celery-beat==2.7.0  # Periodic task scheduler for Celery (https://github.com/celery/django-celery-beat)
+flower==2.0.1  # Celery monitoring tool (https://github.com/mher/flower)
+uvicorn[standard]==0.34.0  # ASGI web server (https://github.com/encode/uvicorn)
+uvicorn-worker==0.3.0  # Uvicorn worker for Gunicorn (https://github.com/Kludex/uvicorn-worker)
 
 # Django
-# ------------------------------------------------------------------------------
-django==5.0.12  # pyup: < 5.1  # https://www.djangoproject.com/
-django-environ==0.12.0  # https://github.com/joke2k/django-environ
-django-model-utils==5.0.0  # https://github.com/jazzband/django-model-utils
-django-allauth[mfa]==65.5.0  # https://github.com/pennersr/django-allauth
-django-crispy-forms==2.3  # https://github.com/django-crispy-forms/django-crispy-forms
-crispy-bootstrap5==2024.10  # https://github.com/django-crispy-forms/crispy-bootstrap5
-django-compressor==4.5.1  # https://github.com/django-compressor/django-compressor
-django-redis==5.4.0  # https://github.com/jazzband/django-redis
+django==5.0.12  # Web framework (https://www.djangoproject.com/)
+django-environ==0.12.0  # Environment variable handling (https://github.com/joke2k/django-environ)
+django-model-utils==5.0.0  # Model utilities (https://github.com/jazzband/django-model-utils)
+django-allauth[mfa]==65.5.0  # Authentication framework (https://github.com/pennersr/django-allauth)
+django-crispy-forms==2.3  # Form layout management (https://github.com/django-crispy-forms/django-crispy-forms)
+crispy-bootstrap5==2024.10  # Bootstrap 5 support for crispy-forms (https://github.com/django-crispy-forms/crispy-bootstrap5)
+django-compressor==4.5.1  # Compresses CSS/JS files (https://github.com/django-compressor/django-compressor)
+django-redis==5.4.0  # Redis cache backend for Django (https://github.com/jazzband/django-redis)
 
 # Django REST Framework
-djangorestframework==3.15.2  # https://github.com/encode/django-rest-framework
-django-cors-headers==4.7.0  # https://github.com/adamchainz/django-cors-headers
+djangorestframework==3.15.2  # API framework (https://github.com/encode/django-rest-framework)
+django-cors-headers==4.7.0  # Handles CORS requests (https://github.com/adamchainz/django-cors-headers)
 
-# DRF-spectacular for API documentation
-drf-spectacular==0.28.0  # https://github.com/tfranzel/drf-spectacular
+# DRF-Spectacular for API documentation
+drf-spectacular==0.28.0  # OpenAPI schema generation (https://github.com/tfranzel/drf-spectacular)
 
-django-imagekit==5.0.0  # https://github.com/matthewwithanm/django-imagekit
-pilkit==3.0.0  # https://github.com/matthewwithanm/pilkit
-django-phonenumber-field==8.0.0  # https://github.com/stefanfoulis/django-phonenumber-field
-django-encrypted-model-fields==0.6.5  # https://pypi.org/project/django-encrypted-model-fields/
-django-countries==7.6.1  # https://github.com/SmileyChris/django-countries
-phonenumbers==9.0.0  # https://github.com/daviddrysdale/python-phonenumbers
+# Image processing
+django-imagekit==5.0.0  # Image processing for Django (https://github.com/matthewwithanm/django-imagekit)
+pilkit==3.0.0  # Processing images with PIL (https://github.com/matthewwithanm/pilkit)
 
-# Money and Currency Packages
-django-money==3.5.3  # https://github.com/django-money/django-money
-py-moneyed==3.0  # https://github.com/limist/py-moneyed
-pycountry==24.6.1  # https://github.com/flyingcircusio/pycountry
-setuptools==76.0.0  # https://pypi.org/project/setuptools/
+# Phone number validation
+django-phonenumber-field==8.0.0  # Phone number field for Django (https://github.com/stefanfoulis/django-phonenumber-field)
+phonenumbers==9.0.0  # Phone number parsing/validation (https://github.com/daviddrysdale/python-phonenumbers)
 
-PyJWT==2.10.1  # https://github.com/jpadilla/pyjwt
+# Model encryption
+django-encrypted-model-fields==0.6.5  # Encrypted model fields (https://pypi.org/project/django-encrypted-model-fields/)
 
-# Additional  packages
-django-mptt==0.16.0  # https://github.com/django-mptt/django-mptt
-django-autoslug==1.9.9  # https://github.com/grantmcconnaughey/django-autoslug
-django-cleanup==9.0.0  # https://github.com/un1t/django-cleanup
-django-js-asset==3.1.2  # https://github.com/matthiask/django-js-asset
+# Country and currency utilities
+django-countries==7.6.1  # Country field for Django models (https://github.com/SmileyChris/django-countries)
+django-money==3.5.3  # Money and currency fields (https://github.com/django-money/django-money)
+py-moneyed==3.0  # Currency handling for Python (https://github.com/limist/py-moneyed)
+pycountry==24.6.1  # Country data (https://github.com/flyingcircusio/pycountry)
+
+# Security and authentication
+PyJWT==2.10.1  # JSON Web Token library (https://github.com/jpadilla/pyjwt)
+
+# Additional packages
+django-mptt==0.16.0  # Tree structure for models (https://github.com/django-mptt/django-mptt)
+django-autoslug==1.9.9  # Automatically generates slugs (https://github.com/grantmcconnaughey/django-autoslug)
+django-cleanup==9.0.0  # Automatically deletes old files (https://github.com/un1t/django-cleanup)
+django-js-asset==3.1.2  # Manages JavaScript assets in Django admin (https://github.com/matthiask/django-js-asset)
+django-import-export==4.3.7  # Import/export data via Django admin (https://github.com/django-import-export/django-import-export)
+django-admin-list-filter-dropdown==1.0.3  # Dropdown filters for Django admin (https://github.com/jazzband/django-admin-list-filter-dropdown)
+diff-match-patch==20241021  # Text diffing library (https://pypi.org/project/diff-match-patch/)
+tablib==3.8.0  # Data format handling (https://github.com/jazzband/tablib)
