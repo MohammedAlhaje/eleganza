@@ -2,7 +2,7 @@ import pytest
 from rest_framework.test import APIRequestFactory
 
 from eleganza.users.api.views import UserViewSet
-from eleganza.users.models import User
+from eleganza.users.model import User
 
 
 class TestUserViewSet:

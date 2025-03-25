@@ -6,7 +6,7 @@ from django.utils.translation import gettext_lazy as _
 from django.views.generic import DetailView
 from django.views.generic import RedirectView
 from django.views.generic import UpdateView
-
+from .forms import UserProfileForm
 from eleganza.users.models import User
 
 
@@ -18,20 +18,18 @@ class UserDetailView(LoginRequiredMixin, DetailView):
 
 user_detail_view = UserDetailView.as_view()
 
-
 class UserUpdateView(LoginRequiredMixin, SuccessMessageMixin, UpdateView):
     model = User
-    fields = ["name"]
+    form_class = UserProfileForm  # Use the form here
     success_message = _("Information successfully updated")
 
     def get_success_url(self) -> str:
         assert self.request.user.is_authenticated  # type guard
         return self.request.user.get_absolute_url()
 
-    def get_object(self, queryset: QuerySet | None=None) -> User:
+    def get_object(self, queryset=None) -> User:
         assert self.request.user.is_authenticated  # type guard
         return self.request.user
-
 
 user_update_view = UserUpdateView.as_view()
 

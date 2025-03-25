@@ -1,6 +1,6 @@
 import pytest
 
-from eleganza.users.models import User
+from eleganza.users.model import User
 from eleganza.users.tests.factories import UserFactory
 
 

@@ -1,3 +1,4 @@
+
 import contextlib
 from http import HTTPStatus
 from importlib import reload
@@ -8,7 +9,7 @@ from django.contrib.auth.models import AnonymousUser
 from django.urls import reverse
 from pytest_django.asserts import assertRedirects
 
-from eleganza.users.models import User
+from eleganza.users.model import User
 
 
 class TestUserAdmin:
