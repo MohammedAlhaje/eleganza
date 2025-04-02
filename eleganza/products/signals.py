@@ -1,67 +1,56 @@
 import logging
 from django.db import transaction
-from django.db.models.signals import (
-    post_save,
-    post_delete,
-    pre_save
-)
+from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
-from django.core.exceptions import ValidationError
-from .models import (
-    Product,
-    ProductReview,
-    Inventory,
-    ProductImage
-)
+from typing import Type, Any
+from .models import ProductReview, ProductVariant, Inventory
 
 logger = logging.getLogger(__name__)
 
+# --------------------------
+# Product Review Signals
+# --------------------------
 @receiver([post_save, post_delete], sender=ProductReview)
-def update_product_rating_stats(sender, instance, **kwargs):
+def update_product_rating_stats(
+    sender: Type[ProductReview],
+    instance: ProductReview,
+    **kwargs: Any
+) -> None:
     """
-    Update product rating statistics when reviews change.
-    Handles both creation/deletion and approval status changes.
-    Uses atomic transaction for data consistency.
+    Optimized rating recalculation with change detection and atomic transaction.
     """
+    # Skip if flagged to bypass
+    if getattr(instance, 'skip_rating_signal', False):
+        return
+
     try:
         with transaction.atomic():
+            product = instance.product
+            original_rating = product.average_rating
+            
+            # Only recalculate if relevant fields changed
+            if not instance._state.adding:  # Existing instance
+                if not any(field in ['rating', 'is_approved'] for field in instance.tracker.changed()):
+                    return
+
+            product.update_rating_stats()
+            
             logger.info(
-                f"Updating rating stats for product {instance.product_id}"
+                f"Updated ratings for product {product.sku} | "
+                f"Old: {original_rating} | New: {product.average_rating}"
             )
-            instance.product.update_rating_stats()
     except Exception as e:
         logger.error(
-            f"Failed updating rating stats for product {instance.product_id}: {str(e)}",
+            f"Rating update failed for product {instance.product_id}: {str(e)}",
             exc_info=True
         )
         raise
 
-@receiver(post_save, sender=Product)
-def create_inventory_for_new_product(sender, instance, created, **kwargs):
-    """
-    Automatically create inventory record for new products.
-    Ensures every product has an inventory tracking entry.
-    """
+# --------------------------
+# Product Variant Signals
+# --------------------------
+@receiver(post_save, sender=ProductVariant)
+def create_inventory_for_new_variant(sender, instance, created, **kwargs):
+    """Simplified inventory creation"""
     if created:
-        try:
-            Inventory.objects.create(product=instance)
-            logger.info(f"Created inventory for new product {instance.sku}")
-        except Exception as e:
-            logger.error(
-                f"Failed creating inventory for product {instance.sku}: {str(e)}",
-                exc_info=True
-            )
-            raise
-
-@receiver(pre_save, sender=ProductImage)
-def handle_primary_image_change(sender, instance, **kwargs):
-    """
-    Ensure only one primary image exists per product.
-    Automatically demotes previous primary image when new one is set.
-    """
-    if instance.is_primary:
-        # Update existing primary images atomically
-        ProductImage.objects.filter(
-            product=instance.product,
-            is_primary=True
-        ).exclude(pk=instance.pk).update(is_primary=False)
+        Inventory.objects.get_or_create(variant=instance)

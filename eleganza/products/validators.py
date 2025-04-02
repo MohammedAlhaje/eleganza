@@ -1,29 +1,34 @@
-# products/validators.py
-from eleganza.core.validators import ImageTypeConfig, BaseImageValidator, secure_image_name
+# products/validators.py (NEW file)
+from core.validators import ImageTypeConfig, BaseImageValidator, secure_image_upload_path
+import uuid
+import os
 
 class ProductImageConfig(ImageTypeConfig):
     UPLOAD_PATH = 'products/'
-    ALLOWED_UPLOWD_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp']
-    OUTPUT_EXTENSION = 'webp'
-    MAX_SIZE_MB = 10  # Larger size limit for products
-    MAX_DIMENSION = 4000
-    VALID_CONTENT_TYPES = ['JPEG', 'PNG', 'WEBP']
+    MAX_SIZE_MB = 5
+    QUALITY = 100
+    MAX_DIMENSION = 3000
 
 class ProductImageValidator(BaseImageValidator):
     def __init__(self):
         super().__init__(ProductImageConfig)
 
 def product_image_path(instance, filename):
-    return secure_image_name(instance, filename, ProductImageConfig)
+    """Secure path generator for product images"""
+    return secure_image_upload_path(instance, filename, ProductImageConfig)
 
-# Similarly for category images
+
+
 class CategoryImageConfig(ImageTypeConfig):
     UPLOAD_PATH = 'categories/'
-    MAX_DIMENSION = 2000
+    MAX_SIZE_MB = 5
+    QUALITY = 100
+    MAX_DIMENSION = 3000
 
 class CategoryImageValidator(BaseImageValidator):
     def __init__(self):
-        super().__init__(CategoryImageConfig)
+        super().__init__(ProductImageConfig)
 
 def category_image_path(instance, filename):
-    return secure_image_name(instance, filename, CategoryImageConfig)
+    """Secure path generator for product images"""
+    return secure_image_upload_path(instance, filename, ProductImageConfig)

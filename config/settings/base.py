@@ -89,6 +89,7 @@ THIRD_PARTY_APPS = [
     "phonenumber_field",
     "allauth.socialaccount.providers.google",
     "allauth.socialaccount.providers.facebook",
+    'nested_admin',
 ]
 
 LOCAL_APPS = [
@@ -418,6 +419,8 @@ PASSWORD_HISTORY_LIMIT = 5  # Number of previous passwords to remember
 #------------------------------------------------------------------------------------
 
 
-
-FIELD_ENCRYPTION_KEY = env("FIELD_ENCRYPTION_KEY", default=None)
+#------------------------------------------------------------------------------------
+# Stock Reservation Settings
+STOCK_RESERVATION_DURATION_MINUTES = 30  # 30min default, adjustable as needed
+#------------------------------------------------------------------------------------
 

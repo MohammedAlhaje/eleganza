@@ -4,6 +4,8 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from django.core.exceptions import ValidationError
 
+
+
 class SoftDeleteQuerySet(models.QuerySet):
     """Custom QuerySet supporting soft delete operations"""
     def delete(self):

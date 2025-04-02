@@ -1,0 +1,17 @@
+
+#!/bin/bash
+
+# Navigate to project root
+cd "$(dirname "$0")" || exit
+
+# Remove all migration files except __init__.py
+find eleganza/ -path "*/migrations/*.py" -not -name "__init__.py" -delete
+find eleganza/ -path "*/migrations/*.pyc" -delete
+
+# Remove pycache directories
+find eleganza/ -type d -name "__pycache__" -exec rm -rf {} +
+
+echo "Cleaned migrations successfully"
+qq
+q
+

@@ -1,6 +1,6 @@
 from allauth.socialaccount.adapter import DefaultSocialAccountAdapter
 from allauth.account.adapter import DefaultAccountAdapter
-from allauth.exceptions import ImmediateHttpResponse
+from allauth.core.exceptions import ImmediateHttpResponse
 from allauth.account.models import EmailAddress  # Import Allauth's EmailAddress model
 from django.core.files.base import ContentFile
 from django.shortcuts import redirect

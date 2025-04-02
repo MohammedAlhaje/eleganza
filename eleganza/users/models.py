@@ -10,10 +10,12 @@ from django_countries.fields import CountryField
 from phonenumber_field.modelfields import PhoneNumberField
 from timezone_field import TimeZoneField
 from imagekit.models import ProcessedImageField
-from imagekit.processors import ResizeToFill
+from imagekit.processors import ResizeToFill, Transpose
 from eleganza.core.models import SoftDeleteModel, TimeStampedModel
-from .validators import AvatarValidator, avatar_path
+from .validators import AvatarValidator, avatar_upload_path,AvatarConfig
 from django.contrib.auth.validators import UnicodeUsernameValidator
+from django.utils.text import slugify
+
 
 class SpaceAllowedUsernameValidator(UnicodeUsernameValidator):
     regex = r'^[\w.@+ -]+\Z'
@@ -21,6 +23,27 @@ class SpaceAllowedUsernameValidator(UnicodeUsernameValidator):
         "Enter a valid username. This value may contain letters, digits, "
         "@/./+/-/_ characters, and spaces."
     )
+
+
+class ContactMethod(models.Model):
+    name = models.CharField(_("Name"), max_length=50)
+    code = models.SlugField(_("Code"), unique=True)
+    is_active = models.BooleanField(_("Active"), default=True)
+    created_at = models.DateTimeField(_("Created at"), auto_now_add=True)
+    updated_at = models.DateTimeField(_("Updated at"), auto_now=True)
+
+    def save(self, *args, **kwargs):
+        self.code = slugify(self.name)
+        super().save(*args, **kwargs)
+
+    class Meta:
+        verbose_name = _("Contact Method")
+        verbose_name_plural = _("Contact Methods")
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
 
 class UserManager(BaseUserManager):
     """Enhanced user manager with complete validation chain"""
@@ -181,14 +204,18 @@ class UserProfile(models.Model):
     
     avatar = ProcessedImageField(
         verbose_name=_("Avatar"),
-        upload_to=avatar_path,
-        processors=[ResizeToFill(400, 400)],
+        upload_to=avatar_upload_path,
+        processors=[
+            Transpose(),  # Auto-rotate based on EXIF
+            ResizeToFill(AvatarConfig.MAX_DIMENSION, AvatarConfig.MAX_DIMENSION),  # Force exact dimensions
+        ],
         format='WEBP',
-        options={'quality': 85},
+        options={'quality': AvatarConfig.QUALITY},
         validators=[AvatarValidator()],
         blank=True,
         null=True,
-        help_text=_("User profile image (WEBP format)")
+        default="avatars/default.webp",
+        help_text=_("User profile image. Will be converted to WEBP format."),
     )
 
     class Meta:
@@ -199,7 +226,7 @@ class UserProfile(models.Model):
 
 class CustomerProfile(UserProfile):
     """Consumer profile with commerce preferences"""
-    
+
     loyalty_points = models.PositiveIntegerField(
         _("Loyalty Points"),
         default=0,
@@ -208,14 +235,15 @@ class CustomerProfile(UserProfile):
     
     newsletter_subscribed = models.BooleanField(
         _("Newsletter Subscribed"),
-        default=True
+        default=False
     )
     
-    preferred_contact_method = models.CharField(
-        _("Preferred Contact Method"),
-        max_length=50,
+    preferred_contact_method = models.ForeignKey(
+        ContactMethod,
+        on_delete=models.SET_NULL,
+        null=True,
         blank=True,
-        null=True
+        verbose_name=_("Preferred Contact Method")
     )
     
     default_currency = models.CharField(
@@ -255,8 +283,10 @@ class TeamMemberProfile(UserProfile):
         _("Profit Percentage"),
         max_digits=5,
         decimal_places=2,
+        default=0.0,
         blank=True,
-        null=True
+        null=True,
+        help_text=_("Percentage of profit to be shared with the team member")
     )
 
 class Address(models.Model):
@@ -338,3 +368,4 @@ class PasswordHistory(models.Model):
 
     def __str__(self):
         return f"Auth Record #{self.pk}"
+    
