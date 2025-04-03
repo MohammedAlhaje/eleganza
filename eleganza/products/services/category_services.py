@@ -22,7 +22,7 @@ def move_category(
         The moved ProductCategory instance
         
     Raises:
-        ValueError: If category doesn't exist
+        ValidationError: If category doesn't exist
         ValidationError: If move is invalid
     """
     try:
@@ -39,7 +39,7 @@ def move_category(
                 raise ValidationError(str(e))
                 
     except ProductCategory.DoesNotExist:
-        raise ValueError(f"Category with ID {category_id} not found")
+        raise ValidationError(f"Category with ID {category_id} not found")
 
 
 def bulk_update_category_products(
@@ -60,19 +60,19 @@ def bulk_update_category_products(
         Number of products updated
         
     Raises:
-        ValueError: If category doesn't exist or invalid update fields
+        ValidationError: If category doesn't exist or invalid update fields
     """
     if not update_fields:
-        raise ValueError("No update fields provided")
+        raise ValidationError("No update fields provided")
         
     if not ProductCategory.objects.filter(pk=category_id).exists():
-        raise ValueError(f"Category with ID {category_id} not found")
+        raise ValidationError(f"Category with ID {category_id} not found")
     
     # Validate fields
     valid_fields = {f.name for f in Product._meta.get_fields()}
     for field in update_fields:
         if field not in valid_fields:
-            raise ValueError(f"Invalid field '{field}' for Product model")
+            raise ValidationError(f"Invalid field '{field}' for Product model")
     
     # Batch processing for large categories
     updated_count = 0

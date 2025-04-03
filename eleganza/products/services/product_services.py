@@ -1,8 +1,9 @@
 from django.db import transaction
 from django.db.models import Case, When, Value, F
 from django.core.exceptions import ValidationError
-from typing import Sequence, Dict, Any
+from typing import Sequence, Dict, Any, Union, List
 from djmoney.money import Money
+from django.db.models import QuerySet
 from eleganza.products.models import Product, ProductVariant
 from eleganza.products.constants import DiscountTypes
 from eleganza.core.utils import chunked_queryset
@@ -63,7 +64,7 @@ def update_product_pricing(product: Product) -> Product:
         product.save(update_fields=['final_price'])
         
         if product.has_variants:
-            _update_variant_prices(product.id)
+            update_variant_prices(product.id)
             
         return product
         
@@ -155,50 +156,45 @@ def bulk_update_products(
             # Batch update variants
             if any(p.has_variants for p in products):
                 for batch in chunked_queryset(products, 50):
-                    _bulk_update_variant_prices([p.id for p in batch])
+                    update_variant_prices([p.id for p in batch])
     
     return updated
 
-# -- Private Helpers -- #
-
-def _update_variant_prices(product_id: int) -> None:
-    """Single product variant price update"""
-    variants = ProductVariant.objects.filter(
-        product_id=product_id
-    ).select_related('product').prefetch_related('attributes')
+def update_variant_prices(product_ids: Union[int, Sequence[int]]) -> int:
+    """
+    Update prices for variants of one or multiple products.
+    Accepts either single product ID or sequence of product IDs.
     
-    updates = []
-    for variant in variants:
-        modifier = sum(
-            attr.value_modifier.amount 
-            for attr in variant.attributes.all() 
-            if hasattr(attr, 'value_modifier')
-        )
+    Args:
+        product_ids: Either a single product ID or sequence of product IDs
         
-        if variant.price_modifier.amount != modifier:
-            variant.price_modifier = Money(modifier, variant.product.selling_price.currency)
-            updates.append(variant)
+    Returns:
+        Number of variants updated
+    """
+    if isinstance(product_ids, int):
+        product_ids = [product_ids]
     
-    if updates:
-        ProductVariant.objects.bulk_update(updates, ['price_modifier'])
-
-def _bulk_update_variant_prices(product_ids: Sequence[int]) -> None:
-    """Optimized bulk variant price updates"""
     variants = ProductVariant.objects.filter(
         product_id__in=product_ids
     ).select_related('product').prefetch_related('attributes')
     
     updates = []
     for variant in variants:
-        modifier = sum(
+        # Calculate new price modifier
+        modifier_amount = sum(
             attr.value_modifier.amount 
             for attr in variant.attributes.all() 
             if hasattr(attr, 'value_modifier')
         )
+        new_modifier = Money(modifier_amount, variant.product.selling_price.currency)
         
-        if variant.price_modifier.amount != modifier:
-            variant.price_modifier = Money(modifier, variant.product.selling_price.currency)
+        # Check if update needed
+        if variant.price_modifier != new_modifier:
+            variant.price_modifier = new_modifier
             updates.append(variant)
     
+    # Perform bulk update if needed
     if updates:
         ProductVariant.objects.bulk_update(updates, ['price_modifier'])
+    
+    return len(updates)

@@ -33,7 +33,7 @@ def submit_product_review(
         
     Raises:
         ValidationError: For invalid review data
-        ValueError: If product/user doesn't exist
+        ValidationError: If product/user doesn't exist
     """
     try:
         # Validate rating
@@ -63,9 +63,9 @@ def submit_product_review(
             return review
             
     except Product.DoesNotExist:
-        raise ValueError(f"Product with ID {product_id} not found")
+        raise ValidationError(f"Product with ID {product_id} not found")
     except User.DoesNotExist:
-        raise ValueError(f"User with ID {user_id} not found")
+        raise ValidationError(f"User with ID {user_id} not found")
 
 @transaction.atomic
 def approve_review(
@@ -84,7 +84,7 @@ def approve_review(
         The approved ProductReview instance
         
     Raises:
-        ValueError: If review doesn't exist
+        ValidationError: If review doesn't exist
     """
     try:
         with transaction.atomic():
@@ -103,7 +103,7 @@ def approve_review(
             return review
             
     except ProductReview.DoesNotExist:
-        raise ValueError(f"Review with ID {review_id} not found")
+        raise ValidationError(f"Review with ID {review_id} not found")
 
 
 @transaction.atomic
@@ -125,7 +125,7 @@ def update_review_helpfulness(
         Updated ProductReview instance
         
     Raises:
-        ValueError: If review doesn't exist
+        ValidationError: If review doesn't exist
     """
     try:
         with transaction.atomic():
@@ -148,7 +148,7 @@ def update_review_helpfulness(
             return review
             
     except ProductReview.DoesNotExist:
-        raise ValueError(f"Review with ID {review_id} not found")
+        raise ValidationError(f"Review with ID {review_id} not found")
 
 # -- Private Helpers -- #
 
