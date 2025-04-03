@@ -19,6 +19,8 @@ from django.core.validators import FileExtensionValidator
 from django.utils.translation import gettext_lazy as _
 from PIL import Image, ImageFile, UnidentifiedImageError
 from PIL.ExifTags import TAGS
+from imagekit.models import ProcessedImageField
+from imagekit.processors import Transpose, ResizeToFill, ResizeToFit
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -55,20 +57,42 @@ class ImageTypeConfig:
         'webp': 'WEBP',
         'jfif': 'JPEG'
     }
+
+    PROCESSORS = [
+        'imagekit.processors.Transpose',  # Auto-rotation
+        'imagekit.processors.ResizeToFill'  # Force exact dimensions
+    ]
+    
+    @property
+    def validator(self):
+        """Returns a configured validator instance"""
+        return ImageValidator(self)
     
     @property
     def allowed_extensions(self):
         """Derive allowed extensions from format mapping"""
         return list(self.FORMAT_MAPPING.keys())
+    
+    def create_product_image_field(self):
+        """Create a ProcessedImageField with current configuration"""
+        return ProcessedImageField(
+            upload_to=self.UPLOAD_PATH,
+            processors=self.PROCESSORS,
+            format='WEBP',
+            options={'quality': self.QUALITY},
+            validators=[self.validator],
+            blank=True,
+            null=True
+        )
 
-class BaseImageValidator(FileExtensionValidator):
+class ImageValidator(FileExtensionValidator):
     """
     Comprehensive image validator with multiple security layers.
     Inherits from Django's FileExtensionValidator for basic extension checks.
     """
     
-    def __init__(self, config_class=ImageTypeConfig):
-        self.config = config_class()
+    def __init__(self, config):
+        self.config = config
         super().__init__(allowed_extensions=self.config.allowed_extensions)
         self._configure_pillow()
     
@@ -108,12 +132,25 @@ class BaseImageValidator(FileExtensionValidator):
                 _("Invalid image format"),
                 code="invalid_image_format"
             ) from e
+        except Exception as e:
+            logger.error(f"Error processing image: {str(e)}")
+            raise ValidationError(
+                _("Error processing image"),
+                code="image_processing_error"
+            ) from e
     
     def _verify_image_format(self, value, img):
         """Verify image matches declared extension"""
-        ext = value.name.split('.')[-1].lower()
+        ext = os.path.splitext(value.name)[1][1:].lower()
         expected_format = self.config.FORMAT_MAPPING.get(ext)
         
+        if not expected_format:
+            logger.error(f"Unsupported extension: {ext}")
+            raise ValidationError(
+                _("Unsupported file extension"),
+                code="unsupported_extension"
+            )
+            
         if img.format != expected_format:
             logger.error(f"Format mismatch: {img.format} vs {expected_format}")
             raise ValidationError(
@@ -128,7 +165,8 @@ class BaseImageValidator(FileExtensionValidator):
             
         animation_checks = {
             'GIF': lambda: img.is_animated,
-            'WEBP': lambda: hasattr(img, 'is_animated') and img.is_animated
+            'WEBP': lambda: hasattr(img, 'is_animated') and img.is_animated,
+            'PNG': lambda: hasattr(img, 'is_animated') and img.is_animated
         }
         
         if animation_checks.get(img.format, lambda: False)():
@@ -171,20 +209,20 @@ class BaseImageValidator(FileExtensionValidator):
     
     def __call__(self, value):
         """Main validation entry point"""
-        logger.info(f"Validating image: {value.name}")
-        original_position = None  # Explicit initialization
+        logger.info(f"Validating image: {getattr(value, 'name', 'unnamed')}")
+        original_position = None
         
         # Skip validation for empty values or system files
         if not value:
             logger.debug("Empty value received")
             return
-        if value.name == 'default.webp':
+        if getattr(value, 'name', '') == 'default.webp':
             logger.debug("Skipping default image")
             return
 
         try:
             # File pointer management
-            if value.seekable():
+            if hasattr(value, 'seekable') and value.seekable():
                 original_position = value.tell()
                 value.seek(0)
             
@@ -192,9 +230,8 @@ class BaseImageValidator(FileExtensionValidator):
             super().__call__(value)  # FileExtensionValidator check
             self._validate_image_content(value)
 
-        except ValidationError as ve:
-            logger.error(f"Validation failed: {ve}")
-            raise ve
+        except ValidationError:
+            raise  # Re-raise Django validation errors
         except Exception as e:
             logger.error(f"Unexpected error: {str(e)}", exc_info=True)
             raise ValidationError(
@@ -202,15 +239,13 @@ class BaseImageValidator(FileExtensionValidator):
                 code="validation_error"
             ) from e
         finally:
-            # Reset file pointer only if valid position exists
-            if value.seekable() and original_position is not None:
+            # Reset file pointer if possible
+            if hasattr(value, 'seekable') and value.seekable() and original_position is not None:
                 try:
-                    value.seek(int(original_position))  # Ensure integer position
-                    logger.debug("File pointer reset successfully")
+                    value.seek(original_position)
                 except (TypeError, OSError) as e:
                     logger.warning(f"Failed to reset file pointer: {str(e)}")
 
-                    
 def secure_image_upload_path(instance, filename: str, config_class=ImageTypeConfig) -> str:
     """
     Generate secure upload path with UUID filename and configured extension.
@@ -243,7 +278,7 @@ def process_image_metadata(image, config_class=ImageTypeConfig):
     
     if config.STRIP_METADATA:
         logger.info("Stripping image metadata")
-        # Remove EXIF data
+        # Remove EXIF data by creating a new image without metadata
         data = list(image.getdata())
         clean_image = Image.new(image.mode, image.size)
         clean_image.putdata(data)

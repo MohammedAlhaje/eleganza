@@ -1,89 +1,51 @@
-# models.py
 from django.db import models
-from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.core.exceptions import ValidationError
 from django.conf import settings
 from django.urls import reverse
-from django.db.models import (
-    Avg, Q, Count, F, Subquery, Sum,
-    OuterRef, DecimalField, Case, When
-)
-from django.db import transaction
-from django.db.models.functions import Coalesce
-from decimal import Decimal
+from django.db.models import Q
 from eleganza.core.models import BaseModel
 from mptt.models import MPTTModel, TreeForeignKey
 from autoslug import AutoSlugField
 from djmoney.models.fields import MoneyField, Money
 from django_cleanup import cleanup
-from imagekit.models import ProcessedImageField
-from imagekit.processors import Transpose, ResizeToFit
-from django.dispatch import receiver
-from django.db.models.signals import post_save, post_delete
-from .validators import (
-    ProductImageValidator, 
-    product_image_path, 
-    ProductImageConfig,
-    category_image_path,
-    CategoryImageValidator,
-    CategoryImageConfig
+from eleganza.products.validators import ProductImageConfig, CategoryImageConfig
+from eleganza.products.constants import (
+    DiscountTypes,
+    FieldLengths,
+    Defaults
 )
 
-# --------------------------
-# Category System
-# --------------------------
 class ProductCategory(MPTTModel, BaseModel):
-    """Hierarchical product categorization with MPTT optimization"""
+    """Hierarchical product category structure"""
     name = models.CharField(
         _("Category Name"),
-        max_length=100,
-        unique=True,
-        help_text=_("Unique name for product category")
+        max_length=FieldLengths.CATEGORY_NAME,
+        unique=True
     )
     parent = TreeForeignKey(
         'self',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='children',
-        verbose_name=_("Parent Category"),
-        help_text=_("Parent category for hierarchical organization")
+        related_name='children'
     )
     slug = AutoSlugField(
         populate_from='name',
         unique=True,
-        verbose_name=_("Category URL Slug"),
-        help_text=_("Unique URL identifier for the category"),
         editable=True
     )
     description = models.TextField(
         _("Description"),
-        blank=True,
-        help_text=_("Detailed category description for SEO and informational purposes")
+        blank=True
     )
-    featured_image = ProcessedImageField(
-        verbose_name=_("Featured Image"),
-        upload_to=category_image_path,
-        processors=[
-            Transpose(),
-            ResizeToFit(CategoryImageConfig.MAX_DIMENSION, CategoryImageConfig.MAX_DIMENSION)
-        ],
-        format='WEBP',
-        options={'quality': CategoryImageConfig.QUALITY},
-        validators=[CategoryImageValidator()],
-        blank=True,
-        null=True,
-        help_text=_("Representative image for the category (max %(dim)sx%(dim)s)") % {
-            'dim': CategoryImageConfig.MAX_DIMENSION
-        }
-    )
+    featured_image = ProductImageConfig().create_product_image_field()
+
     is_active = models.BooleanField(
         _("Active"),
         default=True,
-        db_index=True,
-        help_text=_("Toggle category visibility in storefront")
+        db_index=True
     )
 
     class MPTTMeta:
@@ -100,175 +62,132 @@ class ProductCategory(MPTTModel, BaseModel):
     def __str__(self):
         return self.name
 
-    def get_absolute_url(self):
-        return reverse('products:category-detail', kwargs={'slug': self.slug})
-
     def clean(self):
-        """Validate category hierarchy integrity"""
         if self.parent and self.parent.id == self.id:
             raise ValidationError(_("Category cannot be its own parent"))
         super().clean()
 
+    def get_absolute_url(self):
+        return reverse('products:category-detail', kwargs={'slug': self.slug})
 
-# --------------------------
-# Variant System Core
-# --------------------------
 class ProductAttribute(models.Model):
-    """Defines variant characteristics (Color, Size, etc.)"""
+    """Defines characteristics for variants"""
     name = models.CharField(
         _("Attribute Name"),
-        max_length=100,
-        unique=True,
-        help_text=_("Customer-facing name (e.g., 'Color', 'Size')")
+        max_length=FieldLengths.ATTRIBUTE_NAME,
+        unique=True
     )
     code = models.SlugField(
         _("Attribute Code"),
-        max_length=100,
-        unique=True,
-        help_text=_("Internal identifier (e.g., 'color', 'size')")
+        max_length=FieldLengths.ATTRIBUTE_NAME,
+        unique=True
     )
     is_required = models.BooleanField(
         _("Required"),
-        default=True,
-        help_text=_("Must this attribute be specified for all variants?")
+        default=True
     )
 
     class Meta:
         ordering = ['name']
-        verbose_name = _("Product Attribute")
-        verbose_name_plural = _("Product Attributes")
-        indexes = [
-            models.Index(fields=['code']),
-        ]
+        indexes = [models.Index(fields=['code'])]
 
     def __str__(self):
         return f"{self.name} ({self.code})"
 
     def clean(self):
-        """Normalize attribute code format"""
         self.code = self.code.lower().strip()
         super().clean()
 
-
 class ProductOption(models.Model):
-    """Specific values for product attributes"""
+    """Specific values for attributes"""
     attribute = models.ForeignKey(
         ProductAttribute,
         on_delete=models.CASCADE,
-        related_name='options',
-        verbose_name=_("Attribute")
+        related_name='options'
     )
     value = models.CharField(
         _("Option Value"),
-        max_length=100,
-        help_text=_("Display value (e.g., 'Red', 'XXL')")
+        max_length=FieldLengths.OPTION_VALUE
     )
     sort_order = models.PositiveIntegerField(
         _("Sort Order"),
-        default=0,
-        help_text=_("Display order in selectors (lower first)")
+        default=Defaults.SORT_ORDER
     )
     is_active = models.BooleanField(
         _("Active"),
-        default=True,
-        help_text=_("Toggle option visibility")
+        default=True
     )
 
     class Meta:
         unique_together = ('attribute', 'value')
         ordering = ['attribute__name', 'sort_order', 'value']
-        verbose_name = _("Product Option")
-        verbose_name_plural = _("Product Options")
 
     def __str__(self):
         return f"{self.attribute.name}: {self.value}"
 
     def clean(self):
-        """Normalize option value format"""
         self.value = self.value.strip()
         super().clean()
 
-
-# --------------------------
-# Product Core
-# --------------------------
 class Product(BaseModel):
-    """Central product model with variant support"""
-    DISCOUNT_TYPE_CHOICES = [
-        ('none', _('No Discount')),
-        ('fixed', _('Fixed Amount')),
-        ('percentage', _('Percentage')),
-    ]
-
-    # Identification
+    """Core product model - data structure only"""
     name = models.CharField(
         _("Product Name"),
-        max_length=255,
-        db_index=True,
-        help_text=_("Full product name")
+        max_length=FieldLengths.PRODUCT_NAME,
+        db_index=True
     )
     slug = models.SlugField(
         _("URL Slug"),
-        unique=True,
-        help_text=_("Unique product URL identifier")
+        unique=True
     )
     sku = models.CharField(
         _("SKU"),
-        max_length=50,
+        max_length=FieldLengths.SKU,
         unique=True,
-        db_index=True,
-        help_text=_("Base stock keeping unit")
+        db_index=True
     )
     description = models.TextField(
-        _("Description"),
-        help_text=_("Detailed product description")
+        _("Description")
     )
     category = models.ForeignKey(
         ProductCategory,
         on_delete=models.SET_NULL,
         null=True,
-        related_name='products',
-        verbose_name=_("Category")
+        related_name='products'
     )
-
-    # Pricing
     original_price = MoneyField(
         _("Original Price"),
-        max_digits=14,
-        decimal_places=2,
-        default_currency=settings.DEFAULT_CURRENCY,
-        help_text=_("Manufacturer's suggested price")
+        max_digits=Defaults.PRICE_MAX_DIGITS,
+        decimal_places=Defaults.PRICE_DECIMALS,
+        default_currency=settings.DEFAULT_CURRENCY
     )
     selling_price = MoneyField(
         _("Selling Price"),
-        max_digits=14,
-        decimal_places=2,
-        default_currency=settings.DEFAULT_CURRENCY,
-        help_text=_("Base price before discounts")
+        max_digits=Defaults.PRICE_MAX_DIGITS,
+        decimal_places=Defaults.PRICE_DECIMALS,
+        default_currency=settings.DEFAULT_CURRENCY
     )
     final_price = MoneyField(
         _("Final Price"),
-        max_digits=14,
-        decimal_places=2,
+        max_digits=Defaults.PRICE_MAX_DIGITS,
+        decimal_places=Defaults.PRICE_DECIMALS,
         default_currency=settings.DEFAULT_CURRENCY,
-        editable=False,
-        help_text=_("Calculated price after discounts")
+        editable=False
     )
     discount_type = models.CharField(
         _("Discount Type"),
-        max_length=10,
-        choices=DISCOUNT_TYPE_CHOICES,
-        default='none'
+        max_length=DiscountTypes.MAX_LENGTH,
+        choices=DiscountTypes.CHOICES,
+        default=DiscountTypes.NONE,
     )
     discount_amount = MoneyField(
         _("Discount Amount"),
-        max_digits=14,
-        decimal_places=2,
+        max_digits=Defaults.PRICE_MAX_DIGITS,
+        decimal_places=Defaults.PRICE_DECIMALS,
         default_currency=settings.DEFAULT_CURRENCY,
         default=Money(0, settings.DEFAULT_CURRENCY),
         null=True,
-        blank=True,
-        help_text=_("Fixed amount discount")
+        blank=True
     )
     discount_percent = models.DecimalField(
         _("Discount Percentage"),
@@ -277,44 +196,32 @@ class Product(BaseModel):
         default=0.0,
         null=True,
         blank=True,
-        validators=[MinValueValidator(0), MaxValueValidator(99.99)],
-        help_text=_("Percentage discount")
+        validators=[MinValueValidator(0), MaxValueValidator(100)]
     )
-
-    # Variant Configuration
     has_variants = models.BooleanField(
         _("Has Variants"),
         default=False,
-        db_index=True,
-        help_text=_("Enable product variants")
+        db_index=True
     )
     attributes = models.ManyToManyField(
         ProductAttribute,
         related_name='products',
-        blank=True,
-        verbose_name=_("Variant Attributes"),
-        help_text=_("Attributes defining variants")
+        blank=True
     )
-
-    # Status
     is_featured = models.BooleanField(
         _("Featured"),
         default=False,
-        db_index=True,
-        help_text=_("Feature in prominent areas")
+        db_index=True
     )
     is_active = models.BooleanField(
         _("Active"),
         default=True,
-        db_index=True,
-        help_text=_("Product visibility")
+        db_index=True
     )
-
-    # Ratings
     average_rating = models.DecimalField(
         _("Average Rating"),
-        max_digits=3,
-        decimal_places=1,
+        max_digits=Defaults.RATING_MAX_DIGITS,
+        decimal_places=Defaults.RATING_DECIMALS,
         default=0.0,
         editable=False
     )
@@ -325,9 +232,6 @@ class Product(BaseModel):
     )
 
     class Meta:
-        verbose_name = _("Product")
-        verbose_name_plural = _("Products")
-        ordering = ['-created_at']
         indexes = [
             models.Index(fields=['sku']),
             models.Index(fields=['name']),
@@ -338,231 +242,94 @@ class Product(BaseModel):
     def __str__(self):
         return f"{self.name} ({self.sku})"
 
-    def get_absolute_url(self):
-        return reverse('products:detail', kwargs={'slug': self.slug})
-    
-    def validate_currency(self, field_name, value):
-        if value.currency != settings.DEFAULT_CURRENCY:
-            raise ValidationError({
-                field_name: _("Currency must be %(currency)s") % {
-                    'currency': settings.DEFAULT_CURRENCY
-                }
-            })
-        
     def clean(self):
-        """Validate pricing logic and discount calculations"""
         super().clean()
-        
-        # Validate base price
         if self.selling_price.amount <= 0:
             raise ValidationError({'selling_price': _("Price must be greater than 0")})
+        if self.discount_type == DiscountTypes.FIXED and not self.discount_amount:
+            raise ValidationError({'discount_amount': _("Fixed discount requires amount")})
+        if self.discount_type == DiscountTypes.PERCENTAGE and not self.discount_percent:
+            raise ValidationError({'discount_percent': _("Percentage discount requires value")})
 
-        # Validate discount configuration
-        if self.discount_type != 'none':
-            if self.discount_type == 'fixed' and not self.discount_amount:
-                raise ValidationError({'discount_amount': _("Required for fixed discount")})
-            if self.discount_type == 'percentage' and not self.discount_percent:
-                raise ValidationError({'discount_percent': _("Required for percentage discount")})
+    def get_absolute_url(self):
+        return reverse('products:detail', kwargs={'slug': self.slug})
 
-        # Calculate final price with proper money handling
-        if self.discount_type == 'none':
-            self.final_price = self.selling_price
-        elif self.discount_type == 'fixed':
-            if self.discount_amount.currency != self.selling_price.currency:
-                raise ValidationError(_("Currency mismatch between price and discount"))
-            self.final_price = self.selling_price - self.discount_amount
-        elif self.discount_type == 'percentage':
-            discount = self.selling_price * (Decimal(self.discount_percent) / Decimal(100))
-            self.final_price = self.selling_price - discount
-
-        # Validate final price integrity
-        if self.final_price.amount <= 0:
-            raise ValidationError(_("Final price must be greater than 0"))
-        if self.final_price > self.selling_price:
-            raise ValidationError(_("Final price cannot exceed original selling price"))
-        
-        self.validate_currency('discount_amount', self.discount_amount)
-
-    def save(self, *args, **kwargs):
-        """Handle product deactivation cascading to variants"""
-        if self.pk:
-            original = Product.objects.get(pk=self.pk)
-            if not original.is_active and self.is_active:  # Reactivation case
-                self.variants.update(is_active=True)
-        super().save(*args, **kwargs)
-
-    def update_rating_stats(self):
-        """Recalculate rating aggregates from approved reviews"""
-        stats = self.reviews.filter(is_approved=True).aggregate(
-            average=Avg('rating'),
-            count=Count('id')
-        )
-        self.average_rating = stats.get('average') or 0.0
-        self.review_count = stats.get('count') or 0
-        self.save(update_fields=['average_rating', 'review_count'])
-
-        
-    def get_available_variants(self):
-        """Simplified variant availability check"""
-        return self.variants.filter(
-            is_active=True,
-            inventory__stock_quantity__gt=0
-        ).select_related('inventory')  # Add this
-
-    @property
-    def has_discount(self):
-        """Check if any discount is applied"""
-        return self.discount_type != 'none'
-
-    @property
-    def discount_value(self):
-        """Get formatted discount value for display"""
-        if self.discount_type == 'fixed':
-            return self.discount_amount
-        if self.discount_type == 'percentage':
-            return f"{self.discount_percent}%"
-        return None
-
-
-# --------------------------
-# Variant System
-# --------------------------
 class ProductVariant(BaseModel):
-    """Concrete product variant implementation"""
+    """Variant model - data structure only"""
     product = models.ForeignKey(
         Product,
         on_delete=models.CASCADE,
-        related_name='variants',
-        verbose_name=_("Parent Product")
+        related_name='variants'
     )
     sku = models.CharField(
         _("Variant SKU"),
-        max_length=50,
+        max_length=FieldLengths.SKU,
         unique=True,
-        db_index=True,
-        help_text=_("Unique variant identifier")
+        db_index=True
     )
     options = models.ManyToManyField(
         ProductOption,
-        related_name='variants',
-        verbose_name=_("Selected Options"),
-        help_text=_("Chosen attribute values")
+        related_name='variants'
     )
     price_modifier = MoneyField(
         _("Price Modifier"),
-        max_digits=14,
-        decimal_places=2,
+        max_digits=Defaults.PRICE_MAX_DIGITS,
+        decimal_places=Defaults.PRICE_DECIMALS,
         default=Money(0, settings.DEFAULT_CURRENCY),
-        default_currency=settings.DEFAULT_CURRENCY,
-        help_text=_("Price adjustment from base")
+        default_currency=settings.DEFAULT_CURRENCY
     )
     is_default = models.BooleanField(
         _("Default Variant"),
-        default=False,
-        help_text=_("Primary display variant")
+        default=False
     )
     is_active = models.BooleanField(
         _("Active"),
         default=True,
-        db_index=True,
-        help_text=_("Variant visibility")
+        db_index=True
     )
 
     class Meta:
-        verbose_name = _("Product Variant")
-        verbose_name_plural = _("Product Variants")
         unique_together = ('product', 'sku')
-        indexes = [
-            models.Index(fields=['sku', 'is_active']),
-            models.Index(fields=['is_default']),
-            models.Index(fields=['is_active']),
-        ]
         constraints = [
             models.UniqueConstraint(
                 fields=['product', 'options'],
                 name='unique_variant_options'
             )
         ]
+        indexes = [
+            models.Index(fields=['sku', 'is_active']),
+            models.Index(fields=['is_default']),
+            models.Index(fields=['is_active']),
+        ]
 
     def __str__(self):
-        return f"{self.product.name} - {self.get_variant_name()}"
-
-    def get_variant_name(self):
-        """Generate display name from selected options"""
-        return " / ".join(
-            f"{opt.attribute.name}: {opt.value}" 
-            for opt in self.options.all().order_by('attribute__name')
-        )
+        return f"{self.product.name}"
 
     def clean(self):
-        """Validate variant configuration integrity"""
         super().clean()
-        
-        # Skip validation if product is not saved
-        if not self.product_id:
-            return
-        
-        # Validate attribute membership
-        product_attrs = set(self.product.attributes.values_list('id', flat=True))
-        variant_attrs = {opt.attribute.id for opt in self.options.all()}
-        
-        if variant_attrs - product_attrs:
-            raise ValidationError(_("Variant contains attributes not defined for product"))
+        if self.product_id and self.price_modifier.currency != self.product.selling_price.currency:
+            raise ValidationError(_("Currency mismatch"))
 
-        # Validate required attributes
-        missing_attrs = self.product.attributes.filter(
-            is_required=True
-        ).exclude(
-            id__in=variant_attrs
-        ).values_list('name', flat=True)
-        
-        if missing_attrs:
-            raise ValidationError(
-                _("Missing required attributes: %(attrs)s") % {'attrs': ", ".join(missing_attrs)}
-            )
-
-        # Validate price modifier currency
-        if self.price_modifier.currency != self.product.selling_price.currency:
-            raise ValidationError(_("Price modifier currency must match product currency"))
-
-        # Validate final variant price
-        if (self.product.selling_price + self.price_modifier).amount <= 0:
-            raise ValidationError(_("Variant price must be greater than 0"))
-
-    @property
-    def final_price(self):
-        """Calculate final price including modifier"""
-        return self.product.final_price + self.price_modifier
-
-
-
-
-# --------------------------
-# Inventory Management
-# --------------------------
 class Inventory(models.Model):
-    """Variant-specific inventory tracking without reservations"""
+    """Inventory model - data structure only"""
     variant = models.OneToOneField(
         ProductVariant,
         on_delete=models.CASCADE,
         related_name='inventory',
-        primary_key=True,
-        help_text=_("Linked variant")
+        primary_key=True
     )
     stock_quantity = models.PositiveIntegerField(
         _("Total Stock"),
-        default=0,
-        validators=[MinValueValidator(0)],
-        help_text=_("Physical inventory count")
+        default=Defaults.STOCK_QUANTITY,
+        validators=[MinValueValidator(0)]
     )
     low_stock_threshold = models.PositiveIntegerField(
         _("Low Stock Alert"),
-        default=5,
-        help_text=_("Restock trigger level")
+        default=Defaults.LOW_STOCK_THRESHOLD
     )
     last_restock = models.DateTimeField(
         _("Last Restock"),
-        auto_now_add=True,  # Automatically set on first save
+        auto_now_add=True,
         null=True,
         blank=True
     )
@@ -574,89 +341,62 @@ class Inventory(models.Model):
     def __str__(self):
         return f"Inventory for {self.variant}"
 
-    @property
-    def needs_restock(self):
-        """Check if stock needs replenishment"""
-        return self.stock_quantity <= self.low_stock_threshold
-
-    @property
-    def available_stock(self):
-        """Direct stock quantity without reservations"""
-        return self.stock_quantity
-
-    def stock_status(self):
-        """Human-readable stock status"""
-        if self.available_stock <= 0:
-            return "Out of Stock"
-        elif self.needs_restock:
-            return "Low Stock"
-        return "In Stock"
-
-
-# --------------------------
-# Inventory History
-# --------------------------
-
 class InventoryHistory(models.Model):
-    inventory = models.ForeignKey(Inventory, on_delete=models.CASCADE, related_name='history')
-    old_stock = models.IntegerField(_("Previous Stock"))
-    new_stock = models.IntegerField(_("New Stock"))
-    timestamp = models.DateTimeField(_("Change Time"), auto_now_add=True)
+    """Inventory change history - data structure only"""
+    inventory = models.ForeignKey(
+        Inventory,
+        on_delete=models.CASCADE,
+        related_name='history'
+    )
+    old_stock = models.IntegerField(
+        _("Previous Stock")
+    )
+    new_stock = models.IntegerField(
+        _("New Stock")
+    )
+    timestamp = models.DateTimeField(
+        _("Change Time"),
+        auto_now_add=True
+    )
 
     class Meta:
         ordering = ['-timestamp']
         verbose_name = _("Inventory History")
 
+    def __str__(self):
+        return f"Stock change for {self.inventory}"
 
-# --------------------------
-# Product Media
-# --------------------------
 @cleanup.select
 class ProductImage(BaseModel):
-    """Product imagery with processing and validation"""
+    """Product images - data structure only"""
     product = models.ForeignKey(
         Product,
         on_delete=models.CASCADE,
         related_name='images',
         null=True,
-        blank=True,
-        help_text=_("General product images")
+        blank=True
     )
     variant = models.ForeignKey(
         ProductVariant,
         on_delete=models.CASCADE,
         related_name='images',
         null=True,
-        blank=True,
-        help_text=_("Variant-specific images")
+        blank=True
     )
-    image = ProcessedImageField(
-        verbose_name=_("Product Image"),
-        upload_to=product_image_path,
-        processors=[
-            Transpose(),
-            ResizeToFit(ProductImageConfig.MAX_DIMENSION, ProductImageConfig.MAX_DIMENSION)
-        ],
-        format='WEBP',
-        options={'quality': ProductImageConfig.QUALITY},
-        validators=[ProductImageValidator()],
-        help_text=_("High-quality product image")
-    )
+    image = CategoryImageConfig().create_product_image_field()
+
     is_primary = models.BooleanField(
         _("Primary Image"),
-        default=False,
-        help_text=_("Main display image")
+        default=False
     )
     sort_order = models.PositiveIntegerField(
         _("Sort Order"),
-        default=0,
-        help_text=_("Display priority (lower first)")
+        default=Defaults.SORT_ORDER
     )
     caption = models.CharField(
         _("Caption"),
-        max_length=255,
-        blank=True,
-        help_text=_("Accessibility description")
+        max_length=FieldLengths.IMAGE_CAPTION,
+        blank=True
     )
 
     class Meta:
@@ -665,72 +405,45 @@ class ProductImage(BaseModel):
             models.UniqueConstraint(
                 fields=['product', 'image'],
                 name='unique_product_image',
-                condition=Q(variant__isnull=True)
-            ),
-            models.UniqueConstraint(
-                fields=['variant', 'image'],
-                name='unique_variant_image',
-                condition=Q(product__isnull=True)
-            )
+                condition=Q(variant__isnull=True)),
         ]
-        verbose_name = _("Product Image")
-        verbose_name_plural = _("Product Images")
 
     def __str__(self):
         return _("Image for %(target)s") % {'target': self.product or self.variant}
 
     def clean(self):
-        """Validate media relationships"""
         if not (self.product or self.variant):
             raise ValidationError(_("Must link to a product or variant"))
         if self.product and self.variant:
             raise ValidationError(_("Cannot link to both product and variant"))
 
-    def save(self, *args, **kwargs):
-        """Atomic update to prevent multiple primary images"""
-        if self.is_primary:
-            with transaction.atomic():
-                target = self.product or self.variant
-                target.images.select_for_update().exclude(pk=self.pk).update(is_primary=False)
-        super().save(*args, **kwargs)
-
-
-# --------------------------
-# Reviews & Ratings
-# --------------------------
 class ProductReview(BaseModel):
-    """User-submitted product reviews"""
+    """Review model - data structure only"""
     product = models.ForeignKey(
         Product,
         on_delete=models.CASCADE,
-        related_name='reviews',
-        verbose_name=_("Product")
+        related_name='reviews'
     )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name='reviews',
-        verbose_name=_("User")
+        related_name='reviews'
     )
     rating = models.PositiveSmallIntegerField(
         _("Rating"),
-        validators=[MinValueValidator(1), MaxValueValidator(5)],
-        help_text=_("1 (Poor) to 5 (Excellent)")
+        validators=[MinValueValidator(1), MaxValueValidator(5)]
     )
     title = models.CharField(
         _("Review Title"),
-        max_length=255,
-        help_text=_("Brief summary")
+        max_length=FieldLengths.REVIEW_TITLE
     )
     comment = models.TextField(
-        _("Review Comment"),
-        help_text=_("Detailed feedback")
+        _("Review Comment")
     )
     is_approved = models.BooleanField(
         _("Approved"),
         default=False,
-        db_index=True,
-        help_text=_("Public visibility")
+        db_index=True
     )
     helpful_votes = models.PositiveIntegerField(
         _("Helpful Votes"),
@@ -741,8 +454,6 @@ class ProductReview(BaseModel):
     class Meta:
         unique_together = ('product', 'user')
         ordering = ['-created_at']
-        verbose_name = _("Product Review")
-        verbose_name_plural = _("Product Reviews")
         indexes = [
             models.Index(fields=['rating', 'is_approved']),
         ]
@@ -752,8 +463,3 @@ class ProductReview(BaseModel):
             'user': self.user.get_short_name(),
             'product': self.product.name
         }
-
-    def approve(self):
-        """Approve review and update product stats"""
-        self.is_approved = True
-        self.save()
