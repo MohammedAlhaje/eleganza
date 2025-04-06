@@ -58,3 +58,5 @@ django-admin-list-filter-dropdown==1.0.3  # Dropdown filters for Django admin (h
 diff-match-patch==20241021  # Text diffing library (https://pypi.org/project/diff-match-patch/)
 tablib==3.8.0  # Data format handling (https://github.com/jazzband/tablib)
 django-nested-admin==4.1.1  # Nested admin support for Django (https://github.com/niwinz/django-nested-admin)
+django-admin-filters==0.1.3 #
+django_object_actions==4.3.0 #

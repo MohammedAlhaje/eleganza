@@ -9,12 +9,10 @@ from django.contrib.auth.hashers import check_password
 from django_countries.fields import CountryField
 from phonenumber_field.modelfields import PhoneNumberField
 from timezone_field import TimeZoneField
-from imagekit.models import ProcessedImageField
-from imagekit.processors import ResizeToFill, Transpose
 from eleganza.core.models import SoftDeleteModel, TimeStampedModel
-from .validators import AvatarValidator, avatar_upload_path,AvatarConfig
 from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.utils.text import slugify
+from eleganza.core.image_utils import WebPField
 
 
 class SpaceAllowedUsernameValidator(UnicodeUsernameValidator):
@@ -202,20 +200,17 @@ class UserProfile(models.Model):
         help_text=_("Interface language preference")
     )
     
-    avatar = ProcessedImageField(
-        verbose_name=_("Avatar"),
-        upload_to=avatar_upload_path,
-        processors=[
-            Transpose(),  # Auto-rotate based on EXIF
-            ResizeToFill(AvatarConfig.MAX_DIMENSION, AvatarConfig.MAX_DIMENSION),  # Force exact dimensions
-        ],
-        format='WEBP',
-        options={'quality': AvatarConfig.QUALITY},
-        validators=[AvatarValidator()],
+    avatar = WebPField(
+        # Standard Django params
+        verbose_name=_("Featured Image"),
         blank=True,
         null=True,
-        default="avatars/default.webp",
-        help_text=_("User profile image. Will be converted to WEBP format."),
+        help_text=_("Will be automatically converted to WebP format"),
+        
+        # Custom params
+        UPLOAD_DIR='products/categories/',
+        MAX_SIZE_MB=5,
+        QUALITY=90
     )
 
     class Meta:

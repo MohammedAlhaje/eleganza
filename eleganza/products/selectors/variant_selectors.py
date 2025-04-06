@@ -1,7 +1,7 @@
 from django.db.models import Prefetch, Q, F, Count, Subquery, OuterRef, FloatField
 from typing import List, Dict, Optional, Sequence
 from django.core.exceptions import ValidationError
-from django.core.cache import cache
+from django.views.decorators.cache import cache_page
 from django.db.models.functions import Coalesce, Cast
 from ..models import ProductVariant, ProductOption, Inventory
 from ..constants import FieldLengths, Defaults
@@ -214,7 +214,7 @@ def get_variants_by_options(
     
     return list(queryset)
 
-@cache(60 * 30)  # Cache for 30 minutes
+@cache_page(60 * 30)  # Cache for 30 minutes
 def get_default_variant(
     product_id: int,
     *,
@@ -311,7 +311,7 @@ def get_variant_inventory_status(
     
     return result
 
-@cache(60 * 60)  # Cache for 1 hour
+@cache_page(60 * 60)  # Cache for 1 hour
 def get_variants_with_low_stock(
     product_id: Optional[int] = None,
     *,
@@ -374,7 +374,7 @@ def get_variants_with_low_stock(
     
     return list(queryset)
 
-@cache(60 * 60)  # Cache for 1 hour
+@cache_page(60 * 60)  # Cache for 1 hour
 def get_variant_price_range(product_id: int) -> Optional[Dict[str, float]]:
     """
     Get min/max pricing for a product's variants

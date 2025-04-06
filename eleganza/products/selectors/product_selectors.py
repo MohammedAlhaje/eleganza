@@ -1,7 +1,7 @@
 from django.db.models import Prefetch, Q, F, Count, Avg, Min, Max
 from typing import Optional, List, Dict
 from django.core.exceptions import ValidationError
-from django.core.cache import cache
+from django.views.decorators.cache import cache_page
 from ..models import Product, ProductVariant, ProductReview, ProductCategory
 from ..constants import Defaults
 
@@ -17,7 +17,7 @@ def validate_price_range(min_price: float, max_price: float) -> None:
     if min_price > max_price:
         raise ValidationError("Min price cannot exceed max price")
 
-@cache(60 * 60)  # Cache for 1 hour
+@cache_page(60 * 60)  # Cache for 1 hour
 def get_products(
     *,
     category_id: Optional[int] = None,
@@ -159,7 +159,7 @@ def get_product_detail(
     
     return queryset.first()
 
-@cache(60 * 30)  # Cache for 30 minutes
+@cache_page(60 * 30)  # Cache for 30 minutes
 def get_featured_products(
     limit: int = 8,
     *,
@@ -314,7 +314,7 @@ def get_category_products(
         for cat in categories
     }
 
-@cache(60 * 60)  # Cache for 1 hour
+@cache_page(60 * 60)  # Cache for 1 hour
 def get_product_review_stats(product_id: int) -> Dict[str, float]:
     """
     Get aggregated review statistics for a product

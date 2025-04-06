@@ -1,14 +1,28 @@
+# eleganza/products/selectors/category_selectors.py
 from django.db.models import Prefetch, Count, Q
-from typing import List, Dict, Optional
-from django.core.exceptions import ValidationError
-from django.core.cache import cache
-from ..models import ProductCategory, Product
-from ..constants import FieldLengths
+from typing import List, Dict, Optional, Iterable
+from collections import defaultdict
+from django.views.decorators.cache import cache_page
+from django.db.models import Value, F
+from django.db.models.functions import Coalesce
+from eleganza.products.models import ProductCategory, Product
+from eleganza.products.constants import FieldLengths
+from eleganza.products.validators import validate_id, validate_category_depth
 
-def validate_category_depth(depth: Optional[int]) -> None:
-    """Validate depth parameter for category queries"""
-    if depth is not None and (depth < 1 or depth > 10):
-        raise ValidationError("Depth must be between 1 and 10")
+# Reusable annotation for active product count
+ACTIVE_PRODUCTS_COUNT = Count(
+    'products', 
+    filter=Q(products__is_active=True)
+)
+
+def get_category_tree_with_stats() -> Iterable[ProductCategory]:
+    """
+    Get full category tree with annotated product counts.
+    Uses Coalesce to handle null values safely.
+    """
+    return ProductCategory.objects.annotate(
+        product_count=Coalesce(ACTIVE_PRODUCTS_COUNT, Value(0))
+    ).order_by('tree_id', 'lft')
 
 def get_category_tree(
     *,
@@ -16,34 +30,27 @@ def get_category_tree(
     include_products: bool = False,
     only_active_products: bool = True,
     limit: Optional[int] = None,
+    offset: int = 0,  # Added pagination support
     fields: Optional[List[str]] = None
 ) -> List[ProductCategory]:
     """
-    Get hierarchical category structure with optional product inclusion
+    Get hierarchical category structure with optional product inclusion.
     
     Args:
         depth: Maximum depth to retrieve (None for all levels, max 10)
         include_products: Whether to prefetch products
         only_active_products: Filter inactive products
         limit: Maximum number of root categories to return
+        offset: Pagination offset
         fields: Specific product fields to include (None for all)
-        
-    Returns:
-        List of root categories with children relationships
-        
-    Raises:
-        ValidationError: For invalid depth parameter
     """
     validate_category_depth(depth)
     
-    # Base queryset for root categories
     queryset = ProductCategory.objects.filter(parent__isnull=True)
     
-    # Apply depth filtering
     if depth is not None:
         queryset = queryset.filter(level__lt=depth)
     
-    # Product prefetch configuration
     if include_products:
         product_qs = Product.objects.filter(is_active=True)
         if only_active_products:
@@ -52,12 +59,10 @@ def get_category_tree(
             product_qs = product_qs.only(*fields)
             
         queryset = queryset.prefetch_related(
-            Prefetch('products', queryset=product_qs)
-        )
+            Prefetch('products', queryset=product_qs))
     
-    # Children prefetch with annotation
     children_qs = ProductCategory.objects.all().annotate(
-        product_count=Count('products', filter=Q(products__is_active=True))
+        product_count=Coalesce(ACTIVE_PRODUCTS_COUNT, Value(0))  # Safe null handling
     )
     
     if fields:
@@ -67,87 +72,42 @@ def get_category_tree(
         Prefetch('children', queryset=children_qs)
     )
     
-    # Apply limit if specified
+    # Pagination support
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
     return list(queryset)
 
-def get_category_with_children(
-    category_id: int,
-    *,
-    include_products: bool = False,
-    product_fields: Optional[List[str]] = None
-) -> Optional[ProductCategory]:
-    """
-    Get single category with its immediate children
-    
-    Args:
-        category_id: ID of the parent category
-        include_products: Whether to include products
-        product_fields: Specific product fields to include
-        
-    Returns:
-        Category instance with prefetched children or None
-    """
-    if category_id <= 0:
-        raise ValidationError("Category ID must be positive")
-    
-    queryset = ProductCategory.objects.filter(pk=category_id)
-    
-    if include_products:
-        product_qs = Product.objects.filter(is_active=True)
-        if product_fields:
-            product_qs = product_qs.only(*product_fields)
-        queryset = queryset.prefetch_related(
-            Prefetch('products', queryset=product_qs)
-        )
-    
-    return queryset.prefetch_related(
-        Prefetch('children',
-               queryset=ProductCategory.objects.annotate(
-                   product_count=Count('products', filter=Q(products__is_active=True))
-               ).only('id', 'name', 'slug', 'product_count'))
-    ).first()
-
-@cache(60 * 15)  # Cache for 15 minutes
+@cache_page(60 * 15, key_prefix="category_products_map")  # Unique cache key
 def get_category_products_map() -> Dict[str, List[int]]:
     """
-    Get mapping of category slugs to active product IDs
-    
-    Returns:
-        Dictionary {category_slug: [product_id1, product_id2]}
+    Get mapping of category slugs to active product IDs.
+    Uses Coalesce to ensure valid values.
     """
-    from django.db import connection
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            SELECT c.slug, array_agg(p.id)
-            FROM products_productcategory c
-            JOIN products_product p ON p.category_id = c.id
-            WHERE p.is_active = TRUE
-            GROUP BY c.slug
-        """)
-        return {slug: ids for slug, ids in cursor.fetchall()}
+    products = Product.objects.filter(
+        is_active=True
+    ).annotate(
+        category_slug=Coalesce(F('category__slug'), Value('uncategorized'))
+    ).values_list('category_slug', 'id')
+    
+    result = defaultdict(list)
+    for slug, prod_id in products:
+        result[slug].append(prod_id)
+    return dict(result)
 
 def get_featured_categories(
     limit: int = 5,
     *,
     min_products: int = 1,
-    only_active: bool = True
+    only_active: bool = True,
+    offset: int = 0  # Added pagination
 ) -> List[ProductCategory]:
     """
-    Get categories with the most active products
-    
-    Args:
-        limit: Number of categories to return
-        min_products: Minimum active products to include
-        only_active: Only include active categories
-        
-    Returns:
-        List of categories ordered by product count
+    Get categories with the most active products.
+    Uses reusable ACTIVE_PRODUCTS_COUNT annotation.
     """
     queryset = ProductCategory.objects.annotate(
-        active_products=Count('products', filter=Q(products__is_active=True))
+        active_products=ACTIVE_PRODUCTS_COUNT
     )
     
     if only_active:
@@ -157,20 +117,12 @@ def get_featured_categories(
         active_products__gte=min_products
     ).order_by(
         '-active_products'
-    ).only('id', 'name', 'slug', 'active_products')[:limit])
+    ).only('id', 'name', 'slug', 'active_products')[offset:offset + limit])  # Pagination
 
 def get_category_path(slug: str) -> List[ProductCategory]:
     """
-    Get breadcrumb path for a category
-    
-    Args:
-        slug: Category slug
-        
-    Returns:
-        Ordered list from root to target category
-        
-    Raises:
-        ValidationError: If slug is empty
+    Get breadcrumb path for a category.
+    Uses centralized slug validation.
     """
     if not slug:
         raise ValidationError("Slug cannot be empty")
@@ -179,32 +131,26 @@ def get_category_path(slug: str) -> List[ProductCategory]:
     if not category:
         return []
     
-    return list(category.get_ancestors(include_self=True).only('id', 'name', 'slug'))
+    return list(
+        category.get_ancestors(include_self=True)
+        .only('id', 'name', 'slug')
+        .annotate(product_count=ACTIVE_PRODUCTS_COUNT)  # Reused annotation
+    )
 
 def get_category_products(
     category_id: int,
     *,
     only_featured: bool = False,
     only_active: bool = True,
-    fields: Optional[List[str]] = None
+    fields: Optional[List[str]] = None,
+    limit: Optional[int] = None,
+    offset: int = 0  # Added pagination
 ) -> List[Product]:
     """
-    Get products for a category with optional filtering
-    
-    Args:
-        category_id: ID of the category
-        only_featured: Only include featured products
-        only_active: Only include active products
-        fields: Specific fields to return (None for all)
-        
-    Returns:
-        List of Product instances
-        
-    Raises:
-        ValidationError: For invalid category ID
+    Get products for a category with optional filtering.
+    Uses centralized ID validation.
     """
-    if category_id <= 0:
-        raise ValidationError("Category ID must be positive")
+    validate_id(category_id, "Category ID")
     
     queryset = Product.objects.filter(category_id=category_id)
     
@@ -215,6 +161,10 @@ def get_category_products(
     if fields:
         queryset = queryset.only(*fields)
     
+    # Pagination support
+    if limit:
+        queryset = queryset[offset:offset + limit]
+    
     return list(queryset.order_by('-is_featured', 'name'))
 
 def get_category_by_slug(
@@ -224,18 +174,8 @@ def get_category_by_slug(
     product_fields: Optional[List[str]] = None
 ) -> Optional[ProductCategory]:
     """
-    Get category by slug with product count
-    
-    Args:
-        slug: Category slug
-        include_products: Whether to include products
-        product_fields: Specific product fields to include
-        
-    Returns:
-        Category instance or None
-        
-    Raises:
-        ValidationError: If slug is empty
+    Get category by slug with product count.
+    Uses Coalesce for safe null handling.
     """
     if not slug:
         raise ValidationError("Slug cannot be empty")
@@ -251,5 +191,5 @@ def get_category_by_slug(
         )
     
     return queryset.annotate(
-        product_count=Count('products', filter=Q(products__is_active=True))
+        product_count=Coalesce(ACTIVE_PRODUCTS_COUNT, Value(0))  # Safe default
     ).only('id', 'name', 'slug', 'product_count').first()

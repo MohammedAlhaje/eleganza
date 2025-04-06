@@ -3,7 +3,7 @@ from typing import List, Dict, Optional
 from django.utils import timezone
 from datetime import timedelta
 from django.core.exceptions import ValidationError
-from django.core.cache import cache
+from django.views.decorators.cache import cache_page
 from ..models import ProductReview, Product
 from ..constants import Defaults
 
@@ -22,7 +22,7 @@ def validate_rating(rating: int) -> None:
     if not (1 <= rating <= 5):
         raise ValidationError("Rating must be between 1 and 5")
 
-@cache(60 * 15)  # Cache for 15 minutes
+@cache_page(60 * 15)  # Cache for 15 minutes
 def get_product_reviews(
     product_id: int,
     *,
@@ -86,7 +86,7 @@ def get_product_reviews(
     
     return list(queryset)
 
-@cache(60 * 60)  # Cache for 1 hour
+@cache_page(60 * 60)  # Cache for 1 hour
 def get_review_stats(product_id: int) -> Dict[str, any]:
     """
     Get comprehensive review statistics for a product
@@ -132,7 +132,7 @@ def get_review_stats(product_id: int) -> Dict[str, any]:
         )
     }
 
-@cache(60 * 30)  # Cache for 30 minutes
+@cache_page(60 * 30)  # Cache for 30 minutes
 def get_recent_reviews(
     *,
     limit: int = 5,
@@ -229,7 +229,7 @@ def get_user_reviews(
     
     return list(queryset)
 
-@cache(60 * 60)  # Cache for 1 hour
+@cache_page(60 * 60)  # Cache for 1 hour
 def get_most_helpful_reviews(
     product_id: int,
     *,
@@ -274,7 +274,7 @@ def get_most_helpful_reviews(
         '-created_at'
     )[:limit])
 
-@cache(60 * 60 * 4)  # Cache for 4 hours
+@cache_page(60 * 60 * 4)  # Cache for 4 hours
 def get_review_histogram(
     product_id: int,
     *,
@@ -330,7 +330,7 @@ def get_review_histogram(
     
     return list(queryset)
 
-@cache(60 * 60 * 12)  # Cache for 12 hours
+@cache_page(60 * 60 * 12)  # Cache for 12 hours
 def get_review_engagement_stats() -> Dict[str, any]:
     """
     Get store-wide review engagement metrics

@@ -1,12 +1,14 @@
-from django.db.models import F, Q, Count, Sum, Value, FloatField
+from django.db.models import F, Q, Count, Sum, Value, FloatField, Avg
 from django.db.models.functions import Coalesce
 from typing import List, Dict, Optional
 from django.core.exceptions import ValidationError
-from django.core.cache import cache
+from django.views.decorators.cache import cache_page
 from django.utils import timezone
 from datetime import timedelta
 from ..models import Inventory, InventoryHistory, ProductVariant
 from ..constants import Defaults
+from django.conf import settings
+
 
 def validate_inventory_id(inventory_id: int) -> None:
     """Validate inventory ID parameter"""
@@ -18,7 +20,7 @@ def validate_variant_id(variant_id: int) -> None:
     if variant_id <= 0:
         raise ValidationError("Variant ID must be positive")
 
-@cache(60 * 15)  # Cache for 15 minutes
+@cache_page(60 * 15)  # Cache for 15 minutes
 def get_inventory_status(variant_id: int) -> Optional[Dict[str, any]]:
     """
     Get complete inventory status for a single variant
@@ -191,7 +193,7 @@ def get_inventory_history(
             'notes'
         ))
 
-@cache(60 * 60)  # Cache for 1 hour
+@cache_page(60 * 60)  # Cache for 1 hour
 def get_inventory_summary() -> Dict[str, any]:
     """
     Get store-wide inventory summary statistics
@@ -204,9 +206,6 @@ def get_inventory_summary() -> Dict[str, any]:
         - average_stock: Mean inventory level
         - total_value: Estimated inventory value
     """
-    from django.db.models import Avg
-    from django.db import connection
-    
     # Basic counts
     stats = Inventory.objects.aggregate(
         total_items=Count('id'),
@@ -218,23 +217,21 @@ def get_inventory_summary() -> Dict[str, any]:
         average_stock=Avg('stock_quantity')
     )
     
-    # Value calculation using parameterized query
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            SELECT SUM(i.stock_quantity * p.selling_price_amount) 
-            FROM products_inventory i
-            JOIN products_productvariant v ON i.variant_id = v.id
-            JOIN products_product p ON v.product_id = p.id
-            WHERE i.stock_quantity > 0
-        """)
-        total_value = cursor.fetchone()[0] or 0
+    # Calculate total value using ORM
+    total_value = Inventory.objects.filter(
+        stock_quantity__gt=0
+    ).annotate(
+        product_price=F('variant__product__selling_price_amount'),
+        value=F('stock_quantity') * F('product_price')
+    ).aggregate(
+        total_value=Coalesce(Sum('value'), Value(0, output_field=FloatField()))
+    )['total_value']
     
     return {
         **stats,
         'total_value': total_value,
-        'currency': 'USD'  # Assuming default currency
+        'currency': settings.DEFAULT_CURRENCY  #default currency
     }
-
 def get_variant_inventories(
     product_id: int,
     *,

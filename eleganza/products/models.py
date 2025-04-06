@@ -10,7 +10,7 @@ from mptt.models import MPTTModel, TreeForeignKey
 from autoslug import AutoSlugField
 from djmoney.models.fields import MoneyField, Money
 from django_cleanup import cleanup
-from eleganza.products.validators import ProductImageConfig, CategoryImageConfig
+from eleganza.core.image_utils import WebPField
 from eleganza.products.constants import (
     DiscountTypes,
     FieldLengths,
@@ -40,7 +40,18 @@ class ProductCategory(MPTTModel, BaseModel):
         _("Description"),
         blank=True
     )
-    featured_image = ProductImageConfig().create_product_image_field()
+    featured_image = WebPField(
+        # Standard Django params
+        verbose_name=_("Featured Image"),
+        blank=True,
+        null=True,
+        help_text=_("Will be automatically converted to WebP format"),
+        
+        # Custom params
+        UPLOAD_DIR='products/categories/',
+        MAX_SIZE_MB=5,
+        QUALITY=90
+    )
 
     is_active = models.BooleanField(
         _("Active"),
@@ -290,12 +301,6 @@ class ProductVariant(BaseModel):
 
     class Meta:
         unique_together = ('product', 'sku')
-        constraints = [
-            models.UniqueConstraint(
-                fields=['product', 'options'],
-                name='unique_variant_options'
-            )
-        ]
         indexes = [
             models.Index(fields=['sku', 'is_active']),
             models.Index(fields=['is_default']),
@@ -383,7 +388,18 @@ class ProductImage(BaseModel):
         null=True,
         blank=True
     )
-    image = CategoryImageConfig().create_product_image_field()
+    image = WebPField(
+        # Standard Django params
+        verbose_name=_("Prodcuts Image"),
+        blank=True,
+        null=True,
+        help_text=_("Will be automatically converted to WebP format"),
+        
+        # Custom params
+        UPLOAD_DIR='products/images/',
+        MAX_SIZE_MB=5,
+        QUALITY=90
+    )
 
     is_primary = models.BooleanField(
         _("Primary Image"),

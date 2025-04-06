@@ -1,8 +1,52 @@
+# eleganza/products/services/category_services.py
+
 from django.db import transaction
+from django.db.models import Count
 from django.core.exceptions import ValidationError
 from mptt.exceptions import InvalidMove
 from eleganza.products.models import ProductCategory, Product
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Iterable
+
+def create_category(
+    name: str,
+    parent_id: Optional[int] = None,
+    **kwargs
+) -> ProductCategory:
+    """
+    Create new category with hierarchy validation
+    
+    Args:
+        name: Category name
+        parent_id: Optional parent category ID
+        **kwargs: Additional category fields
+        
+    Returns:
+        Created ProductCategory instance
+        
+    Raises:
+        ValidationError: For invalid parent or duplicate name
+    """
+    try:
+        with transaction.atomic():
+            parent = None
+            if parent_id:
+                parent = ProductCategory.objects.get(pk=parent_id)
+                
+            category = ProductCategory(
+                name=name,
+                parent=parent,
+                **kwargs
+            )
+            
+            category.full_clean()
+            category.save()
+            
+            return category
+            
+    except ProductCategory.DoesNotExist:
+        raise ValidationError(f"Parent category with ID {parent_id} not found")
+    except ValidationError as e:
+        raise ValidationError(e.message_dict)
 
 def move_category(
     category_id: int,
@@ -32,7 +76,6 @@ def move_category(
             try:
                 category.parent_id = new_parent_id
                 category.save()
-                     
                 return category
                 
             except InvalidMove as e:
@@ -41,6 +84,69 @@ def move_category(
     except ProductCategory.DoesNotExist:
         raise ValidationError(f"Category with ID {category_id} not found")
 
+def update_category(
+    category_id: int,
+    update_data: Dict[str, Any]
+) -> ProductCategory:
+    """
+    Update category properties with validation
+    
+    Args:
+        category_id: ID of category to update
+        update_data: Dictionary of field=value pairs
+        
+    Returns:
+        Updated ProductCategory instance
+        
+    Raises:
+        ValidationError: For invalid updates
+    """
+    try:
+        with transaction.atomic():
+            category = ProductCategory.objects.get(pk=category_id)
+            
+            # Handle parent changes separately
+            if 'parent_id' in update_data:
+                move_category(
+                    category_id=category_id,
+                    new_parent_id=update_data.pop('parent_id')
+                )
+                
+            for field, value in update_data.items():
+                setattr(category, field, value)
+                
+            category.full_clean()
+            category.save()
+            
+            return category
+            
+    except ProductCategory.DoesNotExist:
+        raise ValidationError(f"Category with ID {category_id} not found")
+
+def delete_category(category_id: int) -> None:
+    """
+    Delete category and handle product reassignment
+    
+    Args:
+        category_id: ID of category to delete
+        
+    Raises:
+        ValidationError: If category doesn't exist
+    """
+    try:
+        with transaction.atomic():
+            category = ProductCategory.objects.get(pk=category_id)
+            parent = category.parent
+            
+            # Move products to parent or root
+            Product.objects.filter(category=category).update(category=parent)
+            
+            # Delete category and rebuild tree
+            category.delete()
+            ProductCategory.objects.rebuild()
+            
+    except ProductCategory.DoesNotExist:
+        raise ValidationError(f"Category with ID {category_id} not found")
 
 def bulk_update_category_products(
     category_id: int,
@@ -86,7 +192,9 @@ def bulk_update_category_products(
     return updated_count
 
 
-# -- Private Helpers -- #
+
+# Helpers ------------------------------------------------------------------
+
 def chunked_queryset(queryset, size: int):
     """Helper for batching large querysets"""
     start = 0
