@@ -2,6 +2,7 @@
 import os
 import subprocess
 import sys
+import argparse
 from pathlib import Path
 from typing import List, Dict
 
@@ -38,8 +39,18 @@ MIGRATION_CONFIG: Dict[str, List[str]] = {
 
 # 5. Prompt defaults configuration
 PROMPT_DEFAULTS: Dict[str, bool] = {
-    'flush_db': False,           # Default to N for flush database
+    'flush_db': True,           # Default to N for flush database
     'create_superuser': True,    # Default to Y for create superuser
+}
+
+# 6. CLI Flags configuration
+CLI_CONFIG: Dict[str, Dict] = {
+    'non_interactive': {
+        'flag': '--non-interactive',
+        'help': 'Run without interactive prompts, using all defaults',
+        'default': True,
+        'action': 'store_true'
+    }
 }
 # =========================================================
 
@@ -59,8 +70,12 @@ def print_warning(message: str) -> None:
     """Print warning message."""
     print(f"\033[93m⚠ {message}\033[0m")
 
-def get_user_confirmation(prompt: str, default: bool) -> bool:
+def get_user_confirmation(prompt: str, default: bool, non_interactive: bool = False) -> bool:
     """Get user confirmation with clear default indication."""
+    if non_interactive:
+        print(f"{prompt} [Non-interactive mode, using default: {'Y' if default else 'N'}]")
+        return default
+        
     default_str = 'Y' if default else 'N'
     options_str = '[Y/n]' if default else '[y/N]'
     full_prompt = f"{prompt} {options_str} (default is {default_str}): "
@@ -181,11 +196,11 @@ def clear_migrations() -> bool:
     
     return True
 
-def flush_database() -> bool:
+def flush_database(non_interactive: bool = False) -> bool:
     """Flush the database with confirmation."""
     print_header("Flushing Database")
     default = PROMPT_DEFAULTS.get('flush_db', False)
-    if not get_user_confirmation("Are you sure you want to flush the database?", default):
+    if not get_user_confirmation("Are you sure you want to flush the database?", default, non_interactive):
         print_warning("Database flush cancelled")
         return True
     return run_command("python manage.py flush --no-input")
@@ -200,11 +215,11 @@ def apply_migrations() -> bool:
     print_header("Applying Migrations")
     return run_command("python manage.py migrate")
 
-def create_superuser() -> bool:
+def create_superuser(non_interactive: bool = False) -> bool:
     """Create admin user interactively."""
     print_header("Creating Superuser")
     default = PROMPT_DEFAULTS.get('create_superuser', True)
-    if get_user_confirmation("Create default admin user?", default):
+    if get_user_confirmation("Create default admin user?", default, non_interactive):
         env = os.environ.copy()
         env.update({
             "DJANGO_SUPERUSER_USERNAME": SUPERUSER['username'],
@@ -214,8 +229,24 @@ def create_superuser() -> bool:
         return run_command("python manage.py createsuperuser --no-input", env=env)
     return run_command("python manage.py createsuperuser")
 
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments based on CLI_CONFIG."""
+    parser = argparse.ArgumentParser(description='Django Build System')
+    
+    for flag_name, config in CLI_CONFIG.items():
+        parser.add_argument(
+            config['flag'],
+            help=config['help'],
+            default=config['default'],
+            action=config['action']
+        )
+    
+    return parser.parse_args()
+
 def main() -> None:
     """Main build pipeline."""
+    args = parse_args()
+
     print("\033[1m" + "="*40)
     print(" Django Build System")
     print("="*40 + "\033[0m")
@@ -227,10 +258,10 @@ def main() -> None:
         ('django_checks', django_checks),
         ('test', run_tests),
         ('clear_migrations', clear_migrations),
-        ('flush_db', flush_database),
+        ('flush_db', lambda: flush_database(getattr(args, 'non_interactive', False))),
         ('make_migrations', make_migrations),
         ('migrate', apply_migrations),
-        ('create_superuser', create_superuser)
+        ('create_superuser', lambda: create_superuser(getattr(args, 'non_interactive', False)))
     ]
 
     for op_name, op_func in operations:

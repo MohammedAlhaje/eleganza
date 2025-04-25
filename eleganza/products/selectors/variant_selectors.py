@@ -1,27 +1,34 @@
+# eleganza/products/selectors/variant_selectors.py
 from django.db.models import Prefetch, Q, F, Count, Subquery, OuterRef, FloatField
+from django.db.models.functions import Coalesce, Cast
 from typing import List, Dict, Optional, Sequence
 from django.core.exceptions import ValidationError
-from django.views.decorators.cache import cache_page
-from django.db.models.functions import Coalesce, Cast
-from ..models import ProductVariant, ProductOption, Inventory
-from ..constants import FieldLengths, Defaults
+from django.db.models import Value
+from eleganza.products.models import ProductVariant, ProductOption, Inventory
+from eleganza.products.constants import FieldLengths, Defaults
+from eleganza.products.validators import (
+    validate_id,
+    validate_option_ids,
+    validate_threshold,
+    validate_limit
+)
 
-def validate_variant_id(variant_id: int) -> None:
-    """Validate variant ID parameter"""
-    if variant_id <= 0:
-        raise ValidationError("Variant ID must be positive")
+# Reusable annotations
+INVENTORY_STATUS = {
+    'stock': Coalesce(F('inventory__stock_quantity'), Value(0)),
+    'low_stock': Q(inventory__stock_quantity__lte=F('inventory__low_stock_threshold'))
+}
 
-def validate_product_id(product_id: int) -> None:
-    """Validate product ID parameter"""
-    if product_id <= 0:
-        raise ValidationError("Product ID must be positive")
+PRICE_MODIFIER_FIELDS = {
+    'price_amount': Cast(F('price_modifier__amount'), FloatField()),
+    'price_currency': F('price_modifier__currency')
+}
 
-def validate_option_ids(option_ids: List[int]) -> None:
-    """Validate option IDs"""
-    if not option_ids:
-        raise ValidationError("Option IDs cannot be empty")
-    if any(oid <= 0 for oid in option_ids):
-        raise ValidationError("Option IDs must be positive")
+def get_variant_cache_key(**kwargs) -> str:
+    """Generate unique cache key based on query parameters"""
+    from hashlib import md5
+    return f"variant_{md5(str(kwargs).encode()).hexdigest()}"
+
 
 def get_variants_for_product(
     product_id: int,
@@ -30,28 +37,16 @@ def get_variants_for_product(
     include_inventory: bool = True,
     include_options: bool = True,
     fields: Optional[List[str]] = None,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> List[ProductVariant]:
     """
-    Get variants for a product with configurable related data
-    
-    Args:
-        product_id: Parent product ID
-        only_active: Filter inactive variants
-        include_inventory: Prefetch inventory data
-        include_options: Prefetch option/attribute data
-        fields: Specific fields to return (None for all)
-        limit: Maximum variants to return
-        
-    Returns:
-        List of ProductVariant instances
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get variants for a product with configurable related data.
+    Uses centralized validation and reusable annotations.
     """
-    validate_product_id(product_id)
-    if limit is not None and limit <= 0:
-        raise ValidationError("Limit must be positive")
+    validate_id(product_id, "Product ID")
+    if limit is not None:
+        validate_limit(limit)
 
     queryset = ProductVariant.objects.filter(product_id=product_id)
     
@@ -72,10 +67,12 @@ def get_variants_for_product(
     if fields:
         queryset = queryset.only(*fields)
     
+    # Pagination support
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
     return list(queryset.order_by('-is_default', 'sku'))
+
 
 def get_variant_with_full_details(
     variant_id: int,
@@ -84,22 +81,11 @@ def get_variant_with_full_details(
     history_days: int = 30
 ) -> Optional[Dict[str, any]]:
     """
-    Get single variant with complete related data
-    
-    Args:
-        variant_id: Target variant ID
-        include_inventory_history: Include inventory movement data
-        history_days: Days of history to include (1-365)
-        
-    Returns:
-        Dictionary with variant details and related data or None
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get single variant with complete related data.
+    Uses reusable INVENTORY_STATUS annotations.
     """
-    validate_variant_id(variant_id)
-    if not (1 <= history_days <= 365):
-        raise ValidationError("History days must be between 1 and 365")
+    validate_id(variant_id, "Variant ID")
+    validate_days_range(history_days)
 
     variant = ProductVariant.objects.filter(
         pk=variant_id
@@ -111,7 +97,8 @@ def get_variant_with_full_details(
                queryset=ProductOption.objects.select_related('attribute'))
     ).annotate(
         product_name=F('product__name'),
-        product_slug=F('product__slug')
+        product_slug=F('product__slug'),
+        **INVENTORY_STATUS
     ).values(
         'id',
         'sku',
@@ -121,7 +108,8 @@ def get_variant_with_full_details(
         'product_id',
         'product_name',
         'product_slug',
-        'inventory__stock_quantity',
+        'stock',
+        'low_stock',
         'inventory__low_stock_threshold',
         'inventory__last_restock'
     ).first()
@@ -164,28 +152,17 @@ def get_variants_by_options(
     *,
     only_in_stock: bool = False,
     only_active: bool = True,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> List[ProductVariant]:
     """
-    Find variants matching specific option combinations
-    
-    Args:
-        product_id: Parent product ID
-        option_ids: List of ProductOption IDs
-        only_in_stock: Filter to items with inventory
-        only_active: Only include active variants
-        limit: Maximum variants to return
-        
-    Returns:
-        List of matching ProductVariant instances
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Find variants matching specific option combinations.
+    Uses centralized validation for IDs.
     """
-    validate_product_id(product_id)
+    validate_id(product_id, "Product ID")
     validate_option_ids(option_ids)
-    if limit is not None and limit <= 0:
-        raise ValidationError("Limit must be positive")
+    if limit is not None:
+        validate_limit(limit)
 
     queryset = ProductVariant.objects.filter(
         product_id=product_id,
@@ -209,31 +186,22 @@ def get_variants_by_options(
                queryset=ProductOption.objects.select_related('attribute'))
     )
     
+    # Pagination support
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
     return list(queryset)
 
-@cache_page(60 * 30)  # Cache for 30 minutes
 def get_default_variant(
     product_id: int,
     *,
     only_in_stock: bool = False
 ) -> Optional[ProductVariant]:
     """
-    Get the default variant for a product
-    
-    Args:
-        product_id: Parent product ID
-        only_in_stock: Only return if variant has inventory
-        
-    Returns:
-        Default ProductVariant or None
-        
-    Raises:
-        ValidationError: For invalid product ID
+    Get the default variant for a product.
+    Uses reusable INVENTORY_STATUS annotations.
     """
-    validate_product_id(product_id)
+    validate_id(product_id, "Product ID")
 
     queryset = ProductVariant.objects.filter(
         product_id=product_id,
@@ -245,7 +213,9 @@ def get_default_variant(
             inventory__stock_quantity__gt=0
         )
     
-    return queryset.first()
+    return queryset.annotate(
+        **INVENTORY_STATUS
+    ).first()
 
 def get_variant_inventory_status(
     variant_id: int,
@@ -254,39 +224,24 @@ def get_variant_inventory_status(
     historical_days: int = 30
 ) -> Dict[str, any]:
     """
-    Get comprehensive inventory status for a variant
-    
-    Args:
-        variant_id: Target variant ID
-        include_historical: Include recent movement data
-        historical_days: Days of history to include (1-365)
-        
-    Returns:
-        Dictionary with:
-        - variant_id
-        - sku
-        - current_stock
-        - low_stock_threshold
-        - last_restock
-        - historical_changes (if requested)
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get comprehensive inventory status for a variant.
+    Uses centralized validation and reusable components.
     """
-    validate_variant_id(variant_id)
-    if not (1 <= historical_days <= 365):
-        raise ValidationError("Historical days must be between 1 and 365")
+    validate_id(variant_id, "Variant ID")
+    validate_days_range(historical_days)
 
     variant = ProductVariant.objects.filter(
         pk=variant_id
     ).select_related(
         'inventory'
     ).annotate(
-        sku=F('sku')
+        sku=F('sku'),
+        **INVENTORY_STATUS
     ).values(
         'id',
         'sku',
-        'inventory__stock_quantity',
+        'stock',
+        'low_stock',
         'inventory__low_stock_threshold',
         'inventory__last_restock'
     ).first()
@@ -297,7 +252,8 @@ def get_variant_inventory_status(
     result = {
         'variant_id': variant['id'],
         'sku': variant['sku'],
-        'current_stock': variant['inventory__stock_quantity'],
+        'current_stock': variant['stock'],
+        'low_stock': variant['low_stock'],
         'low_stock_threshold': variant['inventory__low_stock_threshold'],
         'last_restock': variant['inventory__last_restock']
     }
@@ -311,38 +267,23 @@ def get_variant_inventory_status(
     
     return result
 
-@cache_page(60 * 60)  # Cache for 1 hour
 def get_variants_with_low_stock(
     product_id: Optional[int] = None,
     *,
     threshold: Optional[int] = None,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> List[Dict[str, any]]:
     """
-    Get variants below stock threshold
-    
-    Args:
-        product_id: Optional parent product filter
-        threshold: Custom low stock threshold
-        limit: Maximum results to return
-        
-    Returns:
-        List of dictionaries with:
-        - variant_id
-        - sku
-        - product_name
-        - current_stock
-        - threshold
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get variants below stock threshold.
+    Uses reusable PRICE_MODIFIER_FIELDS and validation.
     """
     if product_id is not None:
-        validate_product_id(product_id)
-    if threshold is not None and threshold <= 0:
-        raise ValidationError("Threshold must be positive")
-    if limit is not None and limit <= 0:
-        raise ValidationError("Limit must be positive")
+        validate_id(product_id, "Product ID")
+    if threshold is not None:
+        validate_threshold(threshold)
+    if limit is not None:
+        validate_limit(limit)
 
     threshold = threshold or Defaults.LOW_STOCK_THRESHOLD
     
@@ -352,47 +293,37 @@ def get_variants_with_low_stock(
     ).select_related(
         'product',
         'inventory'
-    )
-    
-    if product_id:
-        queryset = queryset.filter(product_id=product_id)
-    
-    queryset = queryset.annotate(
+    ).annotate(
         product_name=F('product__name'),
         current_stock=F('inventory__stock_quantity'),
-        threshold=F('inventory__low_stock_threshold')
+        threshold=F('inventory__low_stock_threshold'),
+        **PRICE_MODIFIER_FIELDS
     ).values(
         'id',
         'sku',
         'product_name',
         'current_stock',
-        'threshold'
+        'threshold',
+        'price_amount',
+        'price_currency'
     ).order_by('current_stock')
     
+    if product_id:
+        queryset = queryset.filter(product_id=product_id)
+    
+    # Pagination support
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
     return list(queryset)
 
-@cache_page(60 * 60)  # Cache for 1 hour
+
 def get_variant_price_range(product_id: int) -> Optional[Dict[str, float]]:
     """
-    Get min/max pricing for a product's variants
-    
-    Args:
-        product_id: Parent product ID
-        
-    Returns:
-        Dictionary with:
-        - min_price
-        - max_price
-        - currency
-        or None if no variants
-        
-    Raises:
-        ValidationError: For invalid product ID
+    Get min/max pricing for a product's variants.
+    Uses reusable PRICE_MODIFIER_FIELDS.
     """
-    validate_product_id(product_id)
+    validate_id(product_id, "Product ID")
 
     result = ProductVariant.objects.filter(
         product_id=product_id,
@@ -417,27 +348,18 @@ def get_variants_by_attribute(
     *,
     only_in_stock: bool = False,
     only_active: bool = True,
-    include_pricing: bool = True
+    include_pricing: bool = True,
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> Dict[str, List[Dict[str, any]]]:
     """
-    Group variants by attribute option
-    
-    Args:
-        product_id: Parent product ID
-        attribute_id: Target attribute ID
-        only_in_stock: Filter to available variants
-        only_active: Only include active variants
-        include_pricing: Include price modifier in results
-        
-    Returns:
-        Dictionary {option_value: [variant_data]}
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Group variants by attribute option.
+    Uses centralized validation and reusable components.
     """
-    validate_product_id(product_id)
-    if attribute_id <= 0:
-        raise ValidationError("Attribute ID must be positive")
+    validate_id(product_id, "Product ID")
+    validate_id(attribute_id, "Attribute ID")
+    if limit is not None:
+        validate_limit(limit)
 
     variants = ProductVariant.objects.filter(
         product_id=product_id,
@@ -458,7 +380,8 @@ def get_variants_by_attribute(
                 variants=OuterRef('pk')
             ).values('value')[:1]
         ),
-        in_stock=Q(inventory__stock_quantity__gt=0)
+        in_stock=Q(inventory__stock_quantity__gt=0),
+        **PRICE_MODIFIER_FIELDS
     )
     
     result = {}
@@ -475,12 +398,17 @@ def get_variants_by_attribute(
         }
         
         if include_pricing:
-            variant_data['price_modifier'] = {
-                'amount': float(variant.price_modifier.amount),
-                'currency': str(variant.price_modifier.currency)
-            }
+            variant_data.update({
+                'price_amount': float(variant.price_amount),
+                'price_currency': str(variant.price_currency)
+            })
         
         result[value].append(variant_data)
+    
+    # Apply pagination per option group
+    if limit:
+        for key in result:
+            result[key] = result[key][offset:offset + limit]
     
     return result
 
@@ -490,14 +418,8 @@ def get_variant_availability(
     threshold: Optional[int] = None
 ) -> Dict[int, Dict[str, any]]:
     """
-    Get availability status for multiple variants
-    
-    Args:
-        variant_ids: Sequence of variant IDs
-        threshold: Custom low stock threshold
-        
-    Returns:
-        Dictionary with variant IDs as keys and status info as values
+    Get availability status for multiple variants.
+    Uses reusable INVENTORY_STATUS annotations.
     """
     if not variant_ids:
         return {}
@@ -506,17 +428,19 @@ def get_variant_availability(
     
     variants = ProductVariant.objects.filter(
         id__in=variant_ids
-    ).select_related('inventory').values(
+    ).select_related('inventory').annotate(
+        **INVENTORY_STATUS
+    ).values(
         'id',
-        'inventory__stock_quantity',
-        'inventory__low_stock_threshold'
+        'stock',
+        'low_stock'
     )
     
     return {
         v['id']: {
-            'in_stock': v['inventory__stock_quantity'] > 0,
-            'low_stock': v['inventory__stock_quantity'] <= threshold,
-            'stock_quantity': v['inventory__stock_quantity']
+            'in_stock': v['stock'] > 0,
+            'low_stock': v['low_stock'],
+            'stock_quantity': v['stock']
         }
         for v in variants
     }

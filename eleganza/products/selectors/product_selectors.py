@@ -1,23 +1,35 @@
+# eleganza/products/selectors/product_selectors.py
 from django.db.models import Prefetch, Q, F, Count, Avg, Min, Max
+from django.db.models.functions import Coalesce
 from typing import Optional, List, Dict
 from django.core.exceptions import ValidationError
-from django.views.decorators.cache import cache_page
-from ..models import Product, ProductVariant, ProductReview, ProductCategory
-from ..constants import Defaults
+from django.db.models import Value, FloatField
 
-def validate_product_id(product_id: int) -> None:
-    """Validate product ID parameter"""
-    if product_id <= 0:
-        raise ValidationError("Product ID must be positive")
+from eleganza.products.models import Product, ProductVariant, ProductReview, ProductCategory
+from eleganza.products.constants import Defaults
+from eleganza.products.validators import (
+    validate_id,
+    validate_price_range,
+    validate_rating,
+)
 
-def validate_price_range(min_price: float, max_price: float) -> None:
-    """Validate price range parameters"""
-    if min_price < 0 or max_price < 0:
-        raise ValidationError("Prices cannot be negative")
-    if min_price > max_price:
-        raise ValidationError("Min price cannot exceed max price")
+# Reusable annotations
+REVIEW_STATS = {
+    'avg_rating': Avg('reviews__rating', filter=Q(reviews__is_approved=True)),
+    'review_count': Count('reviews', filter=Q(reviews__is_approved=True))
+}
 
-@cache_page(60 * 60)  # Cache for 1 hour
+DISCOUNT_FILTER = Q(
+    Q(discount_percent__gt=0) |
+    Q(discount_amount__amount__gt=0)
+)
+
+def get_products_cache_key(**kwargs) -> str:
+    """Generate unique cache key based on query parameters"""
+    from hashlib import md5
+    return f"products_{md5(str(kwargs).encode()).hexdigest()}"
+
+
 def get_products(
     *,
     category_id: Optional[int] = None,
@@ -28,30 +40,15 @@ def get_products(
     only_in_stock: bool = False,
     only_featured: bool = False,
     fields: Optional[List[str]] = None,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> List[Product]:
     """
-    Get products with flexible filtering and optimized queries
-    
-    Args:
-        category_id: Filter by category
-        only_active: Only include active products
-        include_variants: Prefetch variants data
-        include_review_stats: Include review aggregates
-        discount_threshold: Minimum discount percentage/amount
-        only_in_stock: Only include products with available inventory
-        only_featured: Only include featured products
-        fields: Specific fields to return (None for all)
-        limit: Maximum number of products to return
-        
-    Returns:
-        List of Product instances with requested data
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get products with flexible filtering and optimized queries.
+    Uses reusable REVIEW_STATS annotations.
     """
-    if category_id is not None and category_id <= 0:
-        raise ValidationError("Category ID must be positive")
+    if category_id is not None:
+        validate_id(category_id, "Category ID")
     if discount_threshold is not None and discount_threshold < 0:
         raise ValidationError("Discount threshold must be positive")
     if limit is not None and limit <= 0:
@@ -59,7 +56,7 @@ def get_products(
 
     queryset = Product.objects.all()
     
-    # Basic filtering
+    # Base filtering
     if only_active:
         queryset = queryset.filter(is_active=True)
     if only_featured:
@@ -88,22 +85,20 @@ def get_products(
             
         queryset = queryset.prefetch_related(
             Prefetch('variants', 
-                   queryset=variant_qs.select_related('inventory')))
+                   queryset=variant_qs.select_related('inventory'))
+        )
     
     if include_review_stats:
-        queryset = queryset.annotate(
-            avg_rating=Avg('reviews__rating', filter=Q(reviews__is_approved=True)),
-            review_count=Count('reviews', filter=Q(reviews__is_approved=True))
-        )
+        queryset = queryset.annotate(**REVIEW_STATS)
     
     # Field limiting
     if fields:
         queryset = queryset.only(*fields)
     
-    # Ordering and limiting
+    # Pagination support
     queryset = queryset.order_by('-is_featured', 'name')
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
     return list(queryset)
 
@@ -113,25 +108,14 @@ def get_product_detail(
     with_variants: bool = True,
     with_reviews: bool = False,
     with_category: bool = False,
-    review_limit: Optional[int] = None
+    review_limit: Optional[int] = None,
+    review_offset: int = 0
 ) -> Optional[Product]:
     """
-    Get single product with optimized related data loading
-    
-    Args:
-        product_id: ID of product to fetch
-        with_variants: Include variants and inventory
-        with_reviews: Include reviews and ratings
-        with_category: Include category details
-        review_limit: Maximum reviews to include
-        
-    Returns:
-        Product instance with requested relations or None
-        
-    Raises:
-        ValidationError: For invalid product ID
+    Get single product with optimized related data loading.
+    Uses centralized ID validation.
     """
-    validate_product_id(product_id)
+    validate_id(product_id, "Product ID")
     
     queryset = Product.objects.filter(pk=product_id)
     
@@ -144,11 +128,11 @@ def get_product_detail(
             Prefetch('variants', queryset=variant_qs)
         )
     
-    # Review prefetch
+    # Review prefetch with pagination
     if with_reviews:
         review_qs = ProductReview.objects.filter(is_approved=True)
         if review_limit:
-            review_qs = review_qs[:review_limit]
+            review_qs = review_qs[review_offset:review_offset + review_limit]
         queryset = queryset.prefetch_related(
             Prefetch('reviews', 
                    queryset=review_qs.select_related('user')))
@@ -159,33 +143,23 @@ def get_product_detail(
     
     return queryset.first()
 
-@cache_page(60 * 30)  # Cache for 30 minutes
+
 def get_featured_products(
     limit: int = 8,
     *,
     only_in_stock: bool = True,
     min_rating: Optional[float] = None,
-    fields: Optional[List[str]] = None
+    fields: Optional[List[str]] = None,
+    offset: int = 0
 ) -> List[Product]:
     """
-    Get featured products with optimized query
-    
-    Args:
-        limit: Maximum number of products to return
-        only_in_stock: Only include products with inventory
-        min_rating: Minimum average rating
-        fields: Specific fields to return (None for all)
-        
-    Returns:
-        List of featured Product instances
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get featured products with optimized query.
+    Uses reusable REVIEW_STATS annotations.
     """
     if limit <= 0:
         raise ValidationError("Limit must be positive")
-    if min_rating is not None and (min_rating < 0 or min_rating > 5):
-        raise ValidationError("Rating must be between 0 and 5")
+    if min_rating is not None:
+        validate_rating(min_rating)
 
     queryset = Product.objects.filter(
         is_featured=True,
@@ -199,13 +173,14 @@ def get_featured_products(
     
     if min_rating:
         queryset = queryset.annotate(
-            avg_rating=Avg('reviews__rating', filter=Q(reviews__is_approved=True))
+            avg_rating=REVIEW_STATS['avg_rating']
         ).filter(avg_rating__gte=min_rating)
     
     if fields:
         queryset = queryset.only(*fields)
     
-    return list(queryset.order_by('?')[:limit])
+    # Pagination support
+    return list(queryset.order_by('?')[offset:offset + limit])
 
 def get_products_by_price_range(
     min_price: float,
@@ -214,24 +189,12 @@ def get_products_by_price_range(
     *,
     only_in_stock: bool = True,
     only_active: bool = True,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> List[Product]:
     """
-    Get products within price range with inventory check
-    
-    Args:
-        min_price: Minimum price threshold
-        max_price: Maximum price threshold
-        currency: Currency code for price comparison
-        only_in_stock: Only include available products
-        only_active: Only include active products
-        limit: Maximum number of products to return
-        
-    Returns:
-        List of matching Product instances
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get products within price range with inventory check.
+    Uses centralized price validation.
     """
     validate_price_range(min_price, max_price)
     if limit is not None and limit <= 0:
@@ -250,10 +213,12 @@ def get_products_by_price_range(
             variants__inventory__stock_quantity__gt=0
         ).distinct()
     
+    # Pagination support
+    queryset = queryset.order_by('final_price')
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
-    return list(queryset.order_by('final_price'))
+    return list(queryset)
 
 def get_category_products(
     category_id: int,
@@ -262,26 +227,14 @@ def get_category_products(
     only_featured: bool = False,
     only_active: bool = True,
     fields: Optional[List[str]] = None,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> Dict[str, List[Product]]:
     """
-    Get products organized by subcategories
-    
-    Args:
-        category_id: Parent category ID
-        include_subcategories: Include products from child categories
-        only_featured: Only include featured products
-        only_active: Only include active products
-        fields: Specific fields to return (None for all)
-        limit: Maximum products per category
-        
-    Returns:
-        Dictionary with category names as keys and product lists as values
-        
-    Raises:
-        ValidationError: For invalid category ID
+    Get products organized by subcategories.
+    Uses reusable annotations and validators.
     """
-    validate_product_id(category_id)
+    validate_id(category_id, "Category ID")
     if limit is not None and limit <= 0:
         raise ValidationError("Limit must be positive")
 
@@ -301,44 +254,33 @@ def get_category_products(
         product_qs = product_qs.filter(is_featured=True)
     if fields:
         product_qs = product_qs.only(*fields)
+    
+    # Pagination support
     if limit:
-        product_qs = product_qs[:limit]
+        product_qs = product_qs[offset:offset + limit]
     
     categories = categories.prefetch_related(
         Prefetch('products', 
-               queryset=product_qs.order_by('-is_featured'))
-    )
+               queryset=product_qs.order_by('-is_featured')))
     
     return {
         cat.name: list(cat.products.all())
         for cat in categories
     }
 
-@cache_page(60 * 60)  # Cache for 1 hour
+
 def get_product_review_stats(product_id: int) -> Dict[str, float]:
     """
-    Get aggregated review statistics for a product
-    
-    Args:
-        product_id: Product to analyze
-        
-    Returns:
-        Dictionary with:
-        - average_rating
-        - review_count
-        - rating_distribution (1-5 stars)
-        
-    Raises:
-        ValidationError: For invalid product ID
+    Get aggregated review statistics for a product.
+    Uses reusable rating distribution logic.
     """
-    validate_product_id(product_id)
+    validate_id(product_id, "Product ID")
     
     stats = ProductReview.objects.filter(
         product_id=product_id,
         is_approved=True
     ).aggregate(
-        avg_rating=Avg('rating'),
-        review_count=Count('id'),
+        **REVIEW_STATS,
         **{
             f'stars_{i}': Count('id', filter=Q(rating=i))
             for i in range(1, 6)
@@ -358,22 +300,12 @@ def get_products_with_discounts(
     *,
     only_active: bool = True,
     only_in_stock: bool = True,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> List[Product]:
     """
-    Get products with significant discounts
-    
-    Args:
-        min_discount: Minimum discount percentage/amount
-        only_active: Only include active products
-        only_in_stock: Only include available products
-        limit: Maximum number of products to return
-        
-    Returns:
-        List of discounted Product instances
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get products with significant discounts.
+    Uses reusable DISCOUNT_FILTER.
     """
     if min_discount <= 0:
         raise ValidationError("Discount threshold must be positive")
@@ -381,8 +313,7 @@ def get_products_with_discounts(
         raise ValidationError("Limit must be positive")
 
     queryset = Product.objects.filter(
-        Q(discount_percent__gte=min_discount) |
-        Q(discount_amount__amount__gte=min_discount),
+        DISCOUNT_FILTER,
         is_active=only_active
     )
     
@@ -391,7 +322,9 @@ def get_products_with_discounts(
             variants__inventory__stock_quantity__gt=0
         ).distinct()
     
+    # Pagination support
+    queryset = queryset.order_by('-discount_percent')
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
-    return list(queryset.order_by('-discount_percent'))
+    return list(queryset)

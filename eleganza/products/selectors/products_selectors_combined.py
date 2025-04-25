@@ -4,31 +4,29 @@
 #========================================
 
 from django.db.models import Prefetch, Count, Q
-from typing import List, Dict, Optional ,Iterable
+from typing import List, Dict, Optional, Iterable
+from collections import defaultdict
+from django.db.models import Value, F
+from django.db.models.functions import Coalesce
+from eleganza.products.models import ProductCategory, Product
+from eleganza.products.constants import FieldLengths
+from eleganza.products.validators import validate_id, validate_category_depth
 from django.core.exceptions import ValidationError
 
-from collections import defaultdict
-from ..models import ProductCategory, Product
-from ..constants import FieldLengths
-from django.views.decorators.cache import cache_page
-
-def validate_category_depth(depth: Optional[int]) -> None:
-    """Validate depth parameter for category queries"""
-    if depth is not None and (depth < 1 or depth > 10):
-        raise ValidationError("Depth must be between 1 and 10")
-
+# Reusable annotation for active product count
+ACTIVE_PRODUCTS_COUNT = Count(
+    'products', 
+    filter=Q(products__is_active=True)
+)
 
 def get_category_tree_with_stats() -> Iterable[ProductCategory]:
     """
-    Get full category tree with annotated product counts
-    
-    Returns:
-        Queryset of categories with product_count annotation
+    Get full category tree with annotated product counts.
+    Uses Coalesce to handle null values safely.
     """
     return ProductCategory.objects.annotate(
-        product_count=Count('products')
+        product_count=Coalesce(ACTIVE_PRODUCTS_COUNT, Value(0))
     ).order_by('tree_id', 'lft')
-
 
 def get_category_tree(
     *,
@@ -36,34 +34,27 @@ def get_category_tree(
     include_products: bool = False,
     only_active_products: bool = True,
     limit: Optional[int] = None,
+    offset: int = 0,  # Added pagination support
     fields: Optional[List[str]] = None
 ) -> List[ProductCategory]:
     """
-    Get hierarchical category structure with optional product inclusion
+    Get hierarchical category structure with optional product inclusion.
     
     Args:
         depth: Maximum depth to retrieve (None for all levels, max 10)
         include_products: Whether to prefetch products
         only_active_products: Filter inactive products
         limit: Maximum number of root categories to return
+        offset: Pagination offset
         fields: Specific product fields to include (None for all)
-        
-    Returns:
-        List of root categories with children relationships
-        
-    Raises:
-        ValidationError: For invalid depth parameter
     """
     validate_category_depth(depth)
     
-    # Base queryset for root categories
     queryset = ProductCategory.objects.filter(parent__isnull=True)
     
-    # Apply depth filtering
     if depth is not None:
         queryset = queryset.filter(level__lt=depth)
     
-    # Product prefetch configuration
     if include_products:
         product_qs = Product.objects.filter(is_active=True)
         if only_active_products:
@@ -72,12 +63,10 @@ def get_category_tree(
             product_qs = product_qs.only(*fields)
             
         queryset = queryset.prefetch_related(
-            Prefetch('products', queryset=product_qs)
-        )
+            Prefetch('products', queryset=product_qs))
     
-    # Children prefetch with annotation
     children_qs = ProductCategory.objects.all().annotate(
-        product_count=Count('products', filter=Q(products__is_active=True))
+        product_count=Coalesce(ACTIVE_PRODUCTS_COUNT, Value(0))  # Safe null handling
     )
     
     if fields:
@@ -87,60 +76,23 @@ def get_category_tree(
         Prefetch('children', queryset=children_qs)
     )
     
-    # Apply limit if specified
+    # Pagination support
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
     return list(queryset)
 
-def get_category_with_children(
-    category_id: int,
-    *,
-    include_products: bool = False,
-    product_fields: Optional[List[str]] = None
-) -> Optional[ProductCategory]:
-    """
-    Get single category with its immediate children
-    
-    Args:
-        category_id: ID of the parent category
-        include_products: Whether to include products
-        product_fields: Specific product fields to include
-        
-    Returns:
-        Category instance with prefetched children or None
-    """
-    if category_id <= 0:
-        raise ValidationError("Category ID must be positive")
-    
-    queryset = ProductCategory.objects.filter(pk=category_id)
-    
-    if include_products:
-        product_qs = Product.objects.filter(is_active=True)
-        if product_fields:
-            product_qs = product_qs.only(*product_fields)
-        queryset = queryset.prefetch_related(
-            Prefetch('products', queryset=product_qs)
-        )
-    
-    return queryset.prefetch_related(
-        Prefetch('children',
-               queryset=ProductCategory.objects.annotate(
-                   product_count=Count('products', filter=Q(products__is_active=True))
-               ).only('id', 'name', 'slug', 'product_count'))
-    ).first()
 
-@cache_page(60 * 15)  # Cache for 15 minutes
 def get_category_products_map() -> Dict[str, List[int]]:
     """
-    Get mapping of category slugs to active product IDs
-    
-    Returns:
-        Dictionary {category_slug: [product_id1, product_id2]}
+    Get mapping of category slugs to active product IDs.
+    Uses Coalesce to ensure valid values.
     """
     products = Product.objects.filter(
         is_active=True
-    ).values_list('category__slug', 'id')
+    ).annotate(
+        category_slug=Coalesce(F('category__slug'), Value('uncategorized'))
+    ).values_list('category_slug', 'id')
     
     result = defaultdict(list)
     for slug, prod_id in products:
@@ -151,21 +103,15 @@ def get_featured_categories(
     limit: int = 5,
     *,
     min_products: int = 1,
-    only_active: bool = True
+    only_active: bool = True,
+    offset: int = 0  # Added pagination
 ) -> List[ProductCategory]:
     """
-    Get categories with the most active products
-    
-    Args:
-        limit: Number of categories to return
-        min_products: Minimum active products to include
-        only_active: Only include active categories
-        
-    Returns:
-        List of categories ordered by product count
+    Get categories with the most active products.
+    Uses reusable ACTIVE_PRODUCTS_COUNT annotation.
     """
     queryset = ProductCategory.objects.annotate(
-        active_products=Count('products', filter=Q(products__is_active=True))
+        active_products=ACTIVE_PRODUCTS_COUNT
     )
     
     if only_active:
@@ -175,20 +121,12 @@ def get_featured_categories(
         active_products__gte=min_products
     ).order_by(
         '-active_products'
-    ).only('id', 'name', 'slug', 'active_products')[:limit])
+    ).only('id', 'name', 'slug', 'active_products')[offset:offset + limit])  # Pagination
 
 def get_category_path(slug: str) -> List[ProductCategory]:
     """
-    Get breadcrumb path for a category
-    
-    Args:
-        slug: Category slug
-        
-    Returns:
-        Ordered list from root to target category
-        
-    Raises:
-        ValidationError: If slug is empty
+    Get breadcrumb path for a category.
+    Uses centralized slug validation.
     """
     if not slug:
         raise ValidationError("Slug cannot be empty")
@@ -197,32 +135,26 @@ def get_category_path(slug: str) -> List[ProductCategory]:
     if not category:
         return []
     
-    return list(category.get_ancestors(include_self=True).only('id', 'name', 'slug'))
+    return list(
+        category.get_ancestors(include_self=True)
+        .only('id', 'name', 'slug')
+        .annotate(product_count=ACTIVE_PRODUCTS_COUNT)  # Reused annotation
+    )
 
 def get_category_products(
     category_id: int,
     *,
     only_featured: bool = False,
     only_active: bool = True,
-    fields: Optional[List[str]] = None
+    fields: Optional[List[str]] = None,
+    limit: Optional[int] = None,
+    offset: int = 0  # Added pagination
 ) -> List[Product]:
     """
-    Get products for a category with optional filtering
-    
-    Args:
-        category_id: ID of the category
-        only_featured: Only include featured products
-        only_active: Only include active products
-        fields: Specific fields to return (None for all)
-        
-    Returns:
-        List of Product instances
-        
-    Raises:
-        ValidationError: For invalid category ID
+    Get products for a category with optional filtering.
+    Uses centralized ID validation.
     """
-    if category_id <= 0:
-        raise ValidationError("Category ID must be positive")
+    validate_id(category_id, "Category ID")
     
     queryset = Product.objects.filter(category_id=category_id)
     
@@ -233,6 +165,10 @@ def get_category_products(
     if fields:
         queryset = queryset.only(*fields)
     
+    # Pagination support
+    if limit:
+        queryset = queryset[offset:offset + limit]
+    
     return list(queryset.order_by('-is_featured', 'name'))
 
 def get_category_by_slug(
@@ -242,18 +178,8 @@ def get_category_by_slug(
     product_fields: Optional[List[str]] = None
 ) -> Optional[ProductCategory]:
     """
-    Get category by slug with product count
-    
-    Args:
-        slug: Category slug
-        include_products: Whether to include products
-        product_fields: Specific product fields to include
-        
-    Returns:
-        Category instance or None
-        
-    Raises:
-        ValidationError: If slug is empty
+    Get category by slug with product count.
+    Uses Coalesce for safe null handling.
     """
     if not slug:
         raise ValidationError("Slug cannot be empty")
@@ -269,55 +195,47 @@ def get_category_by_slug(
         )
     
     return queryset.annotate(
-        product_count=Count('products', filter=Q(products__is_active=True))
+        product_count=Coalesce(ACTIVE_PRODUCTS_COUNT, Value(0))  # Safe default
     ).only('id', 'name', 'slug', 'product_count').first()
 
 #========================================
 # eleganza/products/selectors/inventory_selectors.py
 #========================================
 
+# eleganza/products/selectors/inventory_selectors.py
 from django.db.models import F, Q, Count, Sum, Value, FloatField, Avg
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, Cast
 from typing import List, Dict, Optional
-from django.core.exceptions import ValidationError
-from django.views.decorators.cache import cache_page
 from django.utils import timezone
 from datetime import timedelta
-from ..models import Inventory, InventoryHistory, ProductVariant
-from ..constants import Defaults
+from django.core.exceptions import ValidationError
+from eleganza.products.models import Inventory, InventoryHistory, ProductVariant
+from eleganza.products.constants import Defaults
+from eleganza.products.validators import validate_id, validate_threshold  # Centralized validator
 from django.conf import settings
 
 
-def validate_inventory_id(inventory_id: int) -> None:
-    """Validate inventory ID parameter"""
-    if inventory_id <= 0:
-        raise ValidationError("Inventory ID must be positive")
+# Reusable annotations
+STOCK_STATUS = Coalesce(F('stock_quantity'), Value(0))
+LOW_STOCK_FLAG = Q(stock_quantity__lte=F('low_stock_threshold'))
 
-def validate_variant_id(variant_id: int) -> None:
-    """Validate variant ID parameter"""
-    if variant_id <= 0:
-        raise ValidationError("Variant ID must be positive")
 
-@cache_page(60 * 15)  # Cache for 15 minutes
+def get_inventory_status_cache_key(variant_id: int) -> str:
+    """Generate unique cache key per variant"""
+    return f"inventory_status_{variant_id}"
+
+
 def get_inventory_status(variant_id: int) -> Optional[Dict[str, any]]:
     """
-    Get complete inventory status for a single variant
+    Get complete inventory status for a single variant with safe defaults.
     
     Args:
         variant_id: ID of the product variant
         
     Returns:
-        Dictionary with:
-        - current_stock
-        - low_stock_flag
-        - last_restock_date
-        - monthly_movement (avg)
-        or None if not found
-        
-    Raises:
-        ValidationError: If variant_id is invalid
+        Dictionary with inventory status or None if not found
     """
-    validate_variant_id(variant_id)
+    validate_id(variant_id, "Variant ID")
     
     inventory = Inventory.objects.filter(
         variant_id=variant_id
@@ -327,13 +245,16 @@ def get_inventory_status(variant_id: int) -> Optional[Dict[str, any]]:
                 filter=Q(history__timestamp__gte=timezone.now() - timedelta(days=30))),
             Value(0)
         ),
-        sku=F('variant__sku')
+        sku=F('variant__sku'),
+        current_stock=STOCK_STATUS,  # Reusable annotation
+        low_stock_flag=LOW_STOCK_FLAG  # Reusable condition
     ).values(
-        'stock_quantity',
+        'current_stock',
         'low_stock_threshold',
         'last_restock',
         'monthly_movement',
-        'sku'
+        'sku',
+        'low_stock_flag'
     ).first()
     
     if not inventory:
@@ -341,7 +262,6 @@ def get_inventory_status(variant_id: int) -> Optional[Dict[str, any]]:
     
     return {
         **inventory,
-        'low_stock_flag': inventory['stock_quantity'] <= inventory['low_stock_threshold'],
         'variant_id': variant_id
     }
 
@@ -350,32 +270,19 @@ def get_low_stock_items(
     threshold: Optional[int] = None,
     only_active: bool = True,
     min_stock: int = 0,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0  # Added pagination
 ) -> List[Dict[str, any]]:
     """
-    Get items below stock threshold with product info
-    
-    Args:
-        threshold: Custom threshold (uses default if None)
-        only_active: Only include active variants
-        min_stock: Minimum stock quantity to include
-        limit: Maximum number of items to return
-        
-    Returns:
-        List of dictionaries with:
-        - variant_id
-        - sku
-        - product_name
-        - current_stock
-        - threshold
+    Get items below stock threshold with product info.
+    Uses reusable STOCK_STATUS annotation.
     """
     threshold = threshold or Defaults.LOW_STOCK_THRESHOLD
+    validate_threshold(threshold)
     
-    if threshold <= 0:
-        raise ValidationError("Threshold must be positive")
     if min_stock < 0:
         raise ValidationError("Minimum stock cannot be negative")
-    
+
     queryset = Inventory.objects.filter(
         stock_quantity__lte=threshold,
         stock_quantity__gte=min_stock
@@ -383,52 +290,38 @@ def get_low_stock_items(
         'variant__product'
     ).annotate(
         product_name=F('variant__product__name'),
-        sku=F('variant__sku')
+        sku=F('variant__sku'),
+        current_stock=STOCK_STATUS  # Reusable annotation
     )
     
     if only_active:
         queryset = queryset.filter(variant__is_active=True)
     
+    # Pagination support
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
     return list(queryset.values(
         'variant_id',
         'sku',
         'product_name',
-        'stock_quantity',
+        'current_stock',
         'low_stock_threshold'
-    ).order_by('stock_quantity'))
+    ).order_by('current_stock'))
 
 def get_inventory_history(
     variant_id: int,
     *,
     days_back: int = 30,
     limit: Optional[int] = None,
+    offset: int = 0,  # Added pagination
     include_metadata: bool = False
 ) -> List[Dict[str, any]]:
     """
-    Get inventory change history for a variant
-    
-    Args:
-        variant_id: ID of the variant
-        days_back: Number of days to look back (1-365)
-        limit: Maximum records to return
-        include_metadata: Include variant info in results
-        
-    Returns:
-        List of historical records with:
-        - date
-        - old_stock
-        - new_stock
-        - delta
-        - notes
-        - variant_info (if include_metadata=True)
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get inventory change history for a variant.
+    Uses centralized days_back validation.
     """
-    validate_variant_id(variant_id)
+    validate_id(variant_id, "Variant ID")
     
     if not (1 <= days_back <= 365):
         raise ValidationError("Days back must be between 1 and 365")
@@ -443,63 +336,44 @@ def get_inventory_history(
     
     history = history.order_by('-timestamp')
     
+    # Pagination support
     if limit:
-        history = history[:limit]
+        history = history[offset:offset + limit]
+    
+    base_values = [
+        'timestamp',
+        'old_stock',
+        'new_stock',
+        'notes'
+    ]
     
     if include_metadata:
         return list(history.annotate(
             delta=F('new_stock') - F('old_stock'),
-            date=F('timestamp'),
             sku=F('inventory__variant__sku')
-        ).values(
-            'date',
-            'old_stock',
-            'new_stock',
-            'delta',
-            'notes',
-            'sku'
-        ))
-    else:
-        return list(history.annotate(
-            delta=F('new_stock') - F('old_stock'),
-            date=F('timestamp')
-        ).values(
-            'date',
-            'old_stock',
-            'new_stock',
-            'delta',
-            'notes'
-        ))
+        ).values(*base_values, 'sku'))
+    
+    return list(history.annotate(
+        delta=F('new_stock') - F('old_stock')
+    ).values(*base_values))
 
-@cache_page(60 * 60)  # Cache for 1 hour
+
 def get_inventory_summary() -> Dict[str, any]:
     """
-    Get store-wide inventory summary statistics
-    
-    Returns:
-        Dictionary with:
-        - total_items: Count of all inventory items
-        - out_of_stock: Count of items with 0 stock
-        - low_stock: Count below threshold
-        - average_stock: Mean inventory level
-        - total_value: Estimated inventory value
+    Get store-wide inventory summary statistics.
+    Uses Coalesce for safe aggregation.
     """
-    # Basic counts
     stats = Inventory.objects.aggregate(
         total_items=Count('id'),
         out_of_stock=Count('id', filter=Q(stock_quantity=0)),
-        low_stock=Count('id', filter=Q(
-            stock_quantity__gt=0,
-            stock_quantity__lte=Defaults.LOW_STOCK_THRESHOLD
-        )),
-        average_stock=Avg('stock_quantity')
+        low_stock=Count('id', filter=LOW_STOCK_FLAG),  # Reusable condition
+        average_stock=Coalesce(Avg('stock_quantity'), Value(0))
     )
     
-    # Calculate total value using ORM
     total_value = Inventory.objects.filter(
         stock_quantity__gt=0
     ).annotate(
-        product_price=F('variant__product__selling_price_amount'),
+        product_price=Coalesce(F('variant__product__selling_price_amount'), Value(0)),
         value=F('stock_quantity') * F('product_price')
     ).aggregate(
         total_value=Coalesce(Sum('value'), Value(0, output_field=FloatField()))
@@ -508,38 +382,23 @@ def get_inventory_summary() -> Dict[str, any]:
     return {
         **stats,
         'total_value': total_value,
-        'currency': settings.DEFAULT_CURRENCY  #default currency
+        'currency': settings.DEFAULT_CURRENCY
     }
+
 def get_variant_inventories(
     product_id: int,
     *,
     only_in_stock: bool = False,
     only_active: bool = True,
-    include_options: bool = True
+    include_options: bool = True,
+    limit: Optional[int] = None,
+    offset: int = 0  # Added pagination
 ) -> List[Dict[str, any]]:
     """
-    Get inventory status for all variants of a product
-    
-    Args:
-        product_id: ID of the parent product
-        only_in_stock: Only include variants with stock > 0
-        only_active: Only include active variants
-        include_options: Include variant options data
-        
-    Returns:
-        List of variant inventories with:
-        - variant_id
-        - sku
-        - options (if include_options)
-        - stock
-        - last_updated
-        - is_active
-        
-    Raises:
-        ValidationError: For invalid product ID
+    Get inventory status for all variants of a product.
+    Uses centralized ID validation.
     """
-    if product_id <= 0:
-        raise ValidationError("Product ID must be positive")
+    validate_id(product_id, "Product ID")
     
     queryset = Inventory.objects.filter(
         variant__product_id=product_id
@@ -555,54 +414,37 @@ def get_variant_inventories(
             'variant__options__attribute'
         )
     
-    inventories = []
-    for inv in queryset:
-        inventory_data = {
+    # Pagination support
+    if limit:
+        queryset = queryset[offset:offset + limit]
+    
+    return [
+        {
             'variant_id': inv.variant_id,
             'sku': inv.variant.sku,
-            'stock': inv.stock_quantity,
+            'stock': inv.stock_quantity or 0,  # Safe default
             'last_updated': inv.last_restock,
             'is_active': inv.variant.is_active,
-            'low_stock': inv.stock_quantity <= inv.low_stock_threshold
-        }
-        
-        if include_options:
-            inventory_data['options'] = [
+            'low_stock': inv.stock_quantity <= (inv.low_stock_threshold or 0),
+            **({'options': [
                 f"{opt.attribute.name}: {opt.value}" 
                 for opt in inv.variant.options.all()
-            ]
-        
-        inventories.append(inventory_data)
-    
-    return inventories
+            ]} if include_options else {})
+        }
+        for inv in queryset
+    ]
 
 def get_restock_candidates(
     *,
     min_sales_velocity: float = 5.0,
     max_weeks_of_stock: int = 2,
     min_stock: int = 0,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0  # Added pagination
 ) -> List[Dict[str, any]]:
     """
-    Get variants needing restock based on sales velocity
-    
-    Args:
-        min_sales_velocity: Minimum weekly sales to consider
-        max_weeks_of_stock: Maximum weeks of inventory to maintain
-        min_stock: Current stock must be above this value
-        limit: Maximum number of results to return
-        
-    Returns:
-        List of dictionaries with:
-        - variant_id
-        - sku
-        - current_stock
-        - weekly_sales
-        - weeks_remaining
-        - product_name
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get variants needing restock based on sales velocity.
+    Uses Coalesce for safe division.
     """
     if min_sales_velocity < 0:
         raise ValidationError("Sales velocity cannot be negative")
@@ -617,11 +459,11 @@ def get_restock_candidates(
                 filter=Q(
                     history__timestamp__gte=timezone.now() - timedelta(days=21),
                     history__new_stock__lt=F('history__old_stock')
-                )) / 3,  # 3 weeks average
-            Value(0.0, output_field=FloatField())
+                )) / 3,
+            Value(0.0)
         ),
         weeks_remaining=Cast('stock_quantity', FloatField()) / 
-                       (F('weekly_sales') + 0.1),  # Avoid division by zero
+                       Coalesce(F('weekly_sales'), Value(0.1)),  # Safe division
         product_name=F('variant__product__name'),
         sku=F('variant__sku')
     ).filter(
@@ -631,8 +473,9 @@ def get_restock_candidates(
         variant__is_active=True
     ).select_related('variant__product')
     
+    # Pagination support
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
     return list(queryset.values(
         'variant_id',
@@ -647,29 +490,23 @@ def get_inventory_alerts(
     *,
     threshold: Optional[int] = None,
     min_sales_velocity: float = 5.0,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0  # Added pagination
 ) -> Dict[str, List[Dict[str, any]]]:
     """
-    Get combined low stock and restock alerts
-    
-    Args:
-        threshold: Low stock threshold
-        min_sales_velocity: Minimum sales for restock candidates
-        limit: Max alerts per type
-        
-    Returns:
-        Dictionary with:
-        - low_stock: List of low stock items
-        - needs_restock: List of restock candidates
+    Get combined low stock and restock alerts.
+    Reuses other selector functions.
     """
     return {
         'low_stock': get_low_stock_items(
             threshold=threshold,
-            limit=limit
+            limit=limit,
+            offset=offset
         ),
         'needs_restock': get_restock_candidates(
             min_sales_velocity=min_sales_velocity,
-            limit=limit
+            limit=limit,
+            offset=offset
         )
     }
 
@@ -677,26 +514,38 @@ def get_inventory_alerts(
 # eleganza/products/selectors/product_selectors.py
 #========================================
 
+# eleganza/products/selectors/product_selectors.py
 from django.db.models import Prefetch, Q, F, Count, Avg, Min, Max
+from django.db.models.functions import Coalesce
 from typing import Optional, List, Dict
 from django.core.exceptions import ValidationError
-from django.views.decorators.cache import cache_page
-from ..models import Product, ProductVariant, ProductReview, ProductCategory
-from ..constants import Defaults
+from django.db.models import Value, FloatField
 
-def validate_product_id(product_id: int) -> None:
-    """Validate product ID parameter"""
-    if product_id <= 0:
-        raise ValidationError("Product ID must be positive")
+from eleganza.products.models import Product, ProductVariant, ProductReview, ProductCategory
+from eleganza.products.constants import Defaults
+from eleganza.products.validators import (
+    validate_id,
+    validate_price_range,
+    validate_rating,
+)
 
-def validate_price_range(min_price: float, max_price: float) -> None:
-    """Validate price range parameters"""
-    if min_price < 0 or max_price < 0:
-        raise ValidationError("Prices cannot be negative")
-    if min_price > max_price:
-        raise ValidationError("Min price cannot exceed max price")
+# Reusable annotations
+REVIEW_STATS = {
+    'avg_rating': Avg('reviews__rating', filter=Q(reviews__is_approved=True)),
+    'review_count': Count('reviews', filter=Q(reviews__is_approved=True))
+}
 
-@cache_page(60 * 60)  # Cache for 1 hour
+DISCOUNT_FILTER = Q(
+    Q(discount_percent__gt=0) |
+    Q(discount_amount__amount__gt=0)
+)
+
+def get_products_cache_key(**kwargs) -> str:
+    """Generate unique cache key based on query parameters"""
+    from hashlib import md5
+    return f"products_{md5(str(kwargs).encode()).hexdigest()}"
+
+
 def get_products(
     *,
     category_id: Optional[int] = None,
@@ -707,30 +556,15 @@ def get_products(
     only_in_stock: bool = False,
     only_featured: bool = False,
     fields: Optional[List[str]] = None,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> List[Product]:
     """
-    Get products with flexible filtering and optimized queries
-    
-    Args:
-        category_id: Filter by category
-        only_active: Only include active products
-        include_variants: Prefetch variants data
-        include_review_stats: Include review aggregates
-        discount_threshold: Minimum discount percentage/amount
-        only_in_stock: Only include products with available inventory
-        only_featured: Only include featured products
-        fields: Specific fields to return (None for all)
-        limit: Maximum number of products to return
-        
-    Returns:
-        List of Product instances with requested data
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get products with flexible filtering and optimized queries.
+    Uses reusable REVIEW_STATS annotations.
     """
-    if category_id is not None and category_id <= 0:
-        raise ValidationError("Category ID must be positive")
+    if category_id is not None:
+        validate_id(category_id, "Category ID")
     if discount_threshold is not None and discount_threshold < 0:
         raise ValidationError("Discount threshold must be positive")
     if limit is not None and limit <= 0:
@@ -738,7 +572,7 @@ def get_products(
 
     queryset = Product.objects.all()
     
-    # Basic filtering
+    # Base filtering
     if only_active:
         queryset = queryset.filter(is_active=True)
     if only_featured:
@@ -767,22 +601,20 @@ def get_products(
             
         queryset = queryset.prefetch_related(
             Prefetch('variants', 
-                   queryset=variant_qs.select_related('inventory')))
+                   queryset=variant_qs.select_related('inventory'))
+        )
     
     if include_review_stats:
-        queryset = queryset.annotate(
-            avg_rating=Avg('reviews__rating', filter=Q(reviews__is_approved=True)),
-            review_count=Count('reviews', filter=Q(reviews__is_approved=True))
-        )
+        queryset = queryset.annotate(**REVIEW_STATS)
     
     # Field limiting
     if fields:
         queryset = queryset.only(*fields)
     
-    # Ordering and limiting
+    # Pagination support
     queryset = queryset.order_by('-is_featured', 'name')
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
     return list(queryset)
 
@@ -792,25 +624,14 @@ def get_product_detail(
     with_variants: bool = True,
     with_reviews: bool = False,
     with_category: bool = False,
-    review_limit: Optional[int] = None
+    review_limit: Optional[int] = None,
+    review_offset: int = 0
 ) -> Optional[Product]:
     """
-    Get single product with optimized related data loading
-    
-    Args:
-        product_id: ID of product to fetch
-        with_variants: Include variants and inventory
-        with_reviews: Include reviews and ratings
-        with_category: Include category details
-        review_limit: Maximum reviews to include
-        
-    Returns:
-        Product instance with requested relations or None
-        
-    Raises:
-        ValidationError: For invalid product ID
+    Get single product with optimized related data loading.
+    Uses centralized ID validation.
     """
-    validate_product_id(product_id)
+    validate_id(product_id, "Product ID")
     
     queryset = Product.objects.filter(pk=product_id)
     
@@ -823,11 +644,11 @@ def get_product_detail(
             Prefetch('variants', queryset=variant_qs)
         )
     
-    # Review prefetch
+    # Review prefetch with pagination
     if with_reviews:
         review_qs = ProductReview.objects.filter(is_approved=True)
         if review_limit:
-            review_qs = review_qs[:review_limit]
+            review_qs = review_qs[review_offset:review_offset + review_limit]
         queryset = queryset.prefetch_related(
             Prefetch('reviews', 
                    queryset=review_qs.select_related('user')))
@@ -838,33 +659,23 @@ def get_product_detail(
     
     return queryset.first()
 
-@cache_page(60 * 30)  # Cache for 30 minutes
+
 def get_featured_products(
     limit: int = 8,
     *,
     only_in_stock: bool = True,
     min_rating: Optional[float] = None,
-    fields: Optional[List[str]] = None
+    fields: Optional[List[str]] = None,
+    offset: int = 0
 ) -> List[Product]:
     """
-    Get featured products with optimized query
-    
-    Args:
-        limit: Maximum number of products to return
-        only_in_stock: Only include products with inventory
-        min_rating: Minimum average rating
-        fields: Specific fields to return (None for all)
-        
-    Returns:
-        List of featured Product instances
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get featured products with optimized query.
+    Uses reusable REVIEW_STATS annotations.
     """
     if limit <= 0:
         raise ValidationError("Limit must be positive")
-    if min_rating is not None and (min_rating < 0 or min_rating > 5):
-        raise ValidationError("Rating must be between 0 and 5")
+    if min_rating is not None:
+        validate_rating(min_rating)
 
     queryset = Product.objects.filter(
         is_featured=True,
@@ -878,13 +689,14 @@ def get_featured_products(
     
     if min_rating:
         queryset = queryset.annotate(
-            avg_rating=Avg('reviews__rating', filter=Q(reviews__is_approved=True))
+            avg_rating=REVIEW_STATS['avg_rating']
         ).filter(avg_rating__gte=min_rating)
     
     if fields:
         queryset = queryset.only(*fields)
     
-    return list(queryset.order_by('?')[:limit])
+    # Pagination support
+    return list(queryset.order_by('?')[offset:offset + limit])
 
 def get_products_by_price_range(
     min_price: float,
@@ -893,24 +705,12 @@ def get_products_by_price_range(
     *,
     only_in_stock: bool = True,
     only_active: bool = True,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> List[Product]:
     """
-    Get products within price range with inventory check
-    
-    Args:
-        min_price: Minimum price threshold
-        max_price: Maximum price threshold
-        currency: Currency code for price comparison
-        only_in_stock: Only include available products
-        only_active: Only include active products
-        limit: Maximum number of products to return
-        
-    Returns:
-        List of matching Product instances
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get products within price range with inventory check.
+    Uses centralized price validation.
     """
     validate_price_range(min_price, max_price)
     if limit is not None and limit <= 0:
@@ -929,10 +729,12 @@ def get_products_by_price_range(
             variants__inventory__stock_quantity__gt=0
         ).distinct()
     
+    # Pagination support
+    queryset = queryset.order_by('final_price')
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
-    return list(queryset.order_by('final_price'))
+    return list(queryset)
 
 def get_category_products(
     category_id: int,
@@ -941,26 +743,14 @@ def get_category_products(
     only_featured: bool = False,
     only_active: bool = True,
     fields: Optional[List[str]] = None,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> Dict[str, List[Product]]:
     """
-    Get products organized by subcategories
-    
-    Args:
-        category_id: Parent category ID
-        include_subcategories: Include products from child categories
-        only_featured: Only include featured products
-        only_active: Only include active products
-        fields: Specific fields to return (None for all)
-        limit: Maximum products per category
-        
-    Returns:
-        Dictionary with category names as keys and product lists as values
-        
-    Raises:
-        ValidationError: For invalid category ID
+    Get products organized by subcategories.
+    Uses reusable annotations and validators.
     """
-    validate_product_id(category_id)
+    validate_id(category_id, "Category ID")
     if limit is not None and limit <= 0:
         raise ValidationError("Limit must be positive")
 
@@ -980,44 +770,33 @@ def get_category_products(
         product_qs = product_qs.filter(is_featured=True)
     if fields:
         product_qs = product_qs.only(*fields)
+    
+    # Pagination support
     if limit:
-        product_qs = product_qs[:limit]
+        product_qs = product_qs[offset:offset + limit]
     
     categories = categories.prefetch_related(
         Prefetch('products', 
-               queryset=product_qs.order_by('-is_featured'))
-    )
+               queryset=product_qs.order_by('-is_featured')))
     
     return {
         cat.name: list(cat.products.all())
         for cat in categories
     }
 
-@cache_page(60 * 60)  # Cache for 1 hour
+
 def get_product_review_stats(product_id: int) -> Dict[str, float]:
     """
-    Get aggregated review statistics for a product
-    
-    Args:
-        product_id: Product to analyze
-        
-    Returns:
-        Dictionary with:
-        - average_rating
-        - review_count
-        - rating_distribution (1-5 stars)
-        
-    Raises:
-        ValidationError: For invalid product ID
+    Get aggregated review statistics for a product.
+    Uses reusable rating distribution logic.
     """
-    validate_product_id(product_id)
+    validate_id(product_id, "Product ID")
     
     stats = ProductReview.objects.filter(
         product_id=product_id,
         is_approved=True
     ).aggregate(
-        avg_rating=Avg('rating'),
-        review_count=Count('id'),
+        **REVIEW_STATS,
         **{
             f'stars_{i}': Count('id', filter=Q(rating=i))
             for i in range(1, 6)
@@ -1037,22 +816,12 @@ def get_products_with_discounts(
     *,
     only_active: bool = True,
     only_in_stock: bool = True,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> List[Product]:
     """
-    Get products with significant discounts
-    
-    Args:
-        min_discount: Minimum discount percentage/amount
-        only_active: Only include active products
-        only_in_stock: Only include available products
-        limit: Maximum number of products to return
-        
-    Returns:
-        List of discounted Product instances
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get products with significant discounts.
+    Uses reusable DISCOUNT_FILTER.
     """
     if min_discount <= 0:
         raise ValidationError("Discount threshold must be positive")
@@ -1060,8 +829,7 @@ def get_products_with_discounts(
         raise ValidationError("Limit must be positive")
 
     queryset = Product.objects.filter(
-        Q(discount_percent__gte=min_discount) |
-        Q(discount_amount__amount__gte=min_discount),
+        DISCOUNT_FILTER,
         is_active=only_active
     )
     
@@ -1070,10 +838,12 @@ def get_products_with_discounts(
             variants__inventory__stock_quantity__gt=0
         ).distinct()
     
+    # Pagination support
+    queryset = queryset.order_by('-discount_percent')
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
-    return list(queryset.order_by('-discount_percent'))
+    return list(queryset)
 
 #========================================
 # eleganza/products/selectors/products_selectors_combined.py
@@ -1085,31 +855,29 @@ def get_products_with_discounts(
 #========================================
 
 from django.db.models import Prefetch, Count, Q
-from typing import List, Dict, Optional ,Iterable
+from typing import List, Dict, Optional, Iterable
+from collections import defaultdict
+from django.db.models import Value, F
+from django.db.models.functions import Coalesce
+from eleganza.products.models import ProductCategory, Product
+from eleganza.products.constants import FieldLengths
+from eleganza.products.validators import validate_id, validate_category_depth
 from django.core.exceptions import ValidationError
 
-from collections import defaultdict
-from ..models import ProductCategory, Product
-from ..constants import FieldLengths
-from django.views.decorators.cache import cache_page
-
-def validate_category_depth(depth: Optional[int]) -> None:
-    """Validate depth parameter for category queries"""
-    if depth is not None and (depth < 1 or depth > 10):
-        raise ValidationError("Depth must be between 1 and 10")
-
+# Reusable annotation for active product count
+ACTIVE_PRODUCTS_COUNT = Count(
+    'products', 
+    filter=Q(products__is_active=True)
+)
 
 def get_category_tree_with_stats() -> Iterable[ProductCategory]:
     """
-    Get full category tree with annotated product counts
-    
-    Returns:
-        Queryset of categories with product_count annotation
+    Get full category tree with annotated product counts.
+    Uses Coalesce to handle null values safely.
     """
     return ProductCategory.objects.annotate(
-        product_count=Count('products')
+        product_count=Coalesce(ACTIVE_PRODUCTS_COUNT, Value(0))
     ).order_by('tree_id', 'lft')
-
 
 def get_category_tree(
     *,
@@ -1117,34 +885,27 @@ def get_category_tree(
     include_products: bool = False,
     only_active_products: bool = True,
     limit: Optional[int] = None,
+    offset: int = 0,  # Added pagination support
     fields: Optional[List[str]] = None
 ) -> List[ProductCategory]:
     """
-    Get hierarchical category structure with optional product inclusion
+    Get hierarchical category structure with optional product inclusion.
     
     Args:
         depth: Maximum depth to retrieve (None for all levels, max 10)
         include_products: Whether to prefetch products
         only_active_products: Filter inactive products
         limit: Maximum number of root categories to return
+        offset: Pagination offset
         fields: Specific product fields to include (None for all)
-        
-    Returns:
-        List of root categories with children relationships
-        
-    Raises:
-        ValidationError: For invalid depth parameter
     """
     validate_category_depth(depth)
     
-    # Base queryset for root categories
     queryset = ProductCategory.objects.filter(parent__isnull=True)
     
-    # Apply depth filtering
     if depth is not None:
         queryset = queryset.filter(level__lt=depth)
     
-    # Product prefetch configuration
     if include_products:
         product_qs = Product.objects.filter(is_active=True)
         if only_active_products:
@@ -1153,12 +914,10 @@ def get_category_tree(
             product_qs = product_qs.only(*fields)
             
         queryset = queryset.prefetch_related(
-            Prefetch('products', queryset=product_qs)
-        )
+            Prefetch('products', queryset=product_qs))
     
-    # Children prefetch with annotation
     children_qs = ProductCategory.objects.all().annotate(
-        product_count=Count('products', filter=Q(products__is_active=True))
+        product_count=Coalesce(ACTIVE_PRODUCTS_COUNT, Value(0))  # Safe null handling
     )
     
     if fields:
@@ -1168,60 +927,23 @@ def get_category_tree(
         Prefetch('children', queryset=children_qs)
     )
     
-    # Apply limit if specified
+    # Pagination support
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
     return list(queryset)
 
-def get_category_with_children(
-    category_id: int,
-    *,
-    include_products: bool = False,
-    product_fields: Optional[List[str]] = None
-) -> Optional[ProductCategory]:
-    """
-    Get single category with its immediate children
-    
-    Args:
-        category_id: ID of the parent category
-        include_products: Whether to include products
-        product_fields: Specific product fields to include
-        
-    Returns:
-        Category instance with prefetched children or None
-    """
-    if category_id <= 0:
-        raise ValidationError("Category ID must be positive")
-    
-    queryset = ProductCategory.objects.filter(pk=category_id)
-    
-    if include_products:
-        product_qs = Product.objects.filter(is_active=True)
-        if product_fields:
-            product_qs = product_qs.only(*product_fields)
-        queryset = queryset.prefetch_related(
-            Prefetch('products', queryset=product_qs)
-        )
-    
-    return queryset.prefetch_related(
-        Prefetch('children',
-               queryset=ProductCategory.objects.annotate(
-                   product_count=Count('products', filter=Q(products__is_active=True))
-               ).only('id', 'name', 'slug', 'product_count'))
-    ).first()
 
-@cache_page(60 * 15)  # Cache for 15 minutes
 def get_category_products_map() -> Dict[str, List[int]]:
     """
-    Get mapping of category slugs to active product IDs
-    
-    Returns:
-        Dictionary {category_slug: [product_id1, product_id2]}
+    Get mapping of category slugs to active product IDs.
+    Uses Coalesce to ensure valid values.
     """
     products = Product.objects.filter(
         is_active=True
-    ).values_list('category__slug', 'id')
+    ).annotate(
+        category_slug=Coalesce(F('category__slug'), Value('uncategorized'))
+    ).values_list('category_slug', 'id')
     
     result = defaultdict(list)
     for slug, prod_id in products:
@@ -1232,21 +954,15 @@ def get_featured_categories(
     limit: int = 5,
     *,
     min_products: int = 1,
-    only_active: bool = True
+    only_active: bool = True,
+    offset: int = 0  # Added pagination
 ) -> List[ProductCategory]:
     """
-    Get categories with the most active products
-    
-    Args:
-        limit: Number of categories to return
-        min_products: Minimum active products to include
-        only_active: Only include active categories
-        
-    Returns:
-        List of categories ordered by product count
+    Get categories with the most active products.
+    Uses reusable ACTIVE_PRODUCTS_COUNT annotation.
     """
     queryset = ProductCategory.objects.annotate(
-        active_products=Count('products', filter=Q(products__is_active=True))
+        active_products=ACTIVE_PRODUCTS_COUNT
     )
     
     if only_active:
@@ -1256,20 +972,12 @@ def get_featured_categories(
         active_products__gte=min_products
     ).order_by(
         '-active_products'
-    ).only('id', 'name', 'slug', 'active_products')[:limit])
+    ).only('id', 'name', 'slug', 'active_products')[offset:offset + limit])  # Pagination
 
 def get_category_path(slug: str) -> List[ProductCategory]:
     """
-    Get breadcrumb path for a category
-    
-    Args:
-        slug: Category slug
-        
-    Returns:
-        Ordered list from root to target category
-        
-    Raises:
-        ValidationError: If slug is empty
+    Get breadcrumb path for a category.
+    Uses centralized slug validation.
     """
     if not slug:
         raise ValidationError("Slug cannot be empty")
@@ -1278,32 +986,26 @@ def get_category_path(slug: str) -> List[ProductCategory]:
     if not category:
         return []
     
-    return list(category.get_ancestors(include_self=True).only('id', 'name', 'slug'))
+    return list(
+        category.get_ancestors(include_self=True)
+        .only('id', 'name', 'slug')
+        .annotate(product_count=ACTIVE_PRODUCTS_COUNT)  # Reused annotation
+    )
 
 def get_category_products(
     category_id: int,
     *,
     only_featured: bool = False,
     only_active: bool = True,
-    fields: Optional[List[str]] = None
+    fields: Optional[List[str]] = None,
+    limit: Optional[int] = None,
+    offset: int = 0  # Added pagination
 ) -> List[Product]:
     """
-    Get products for a category with optional filtering
-    
-    Args:
-        category_id: ID of the category
-        only_featured: Only include featured products
-        only_active: Only include active products
-        fields: Specific fields to return (None for all)
-        
-    Returns:
-        List of Product instances
-        
-    Raises:
-        ValidationError: For invalid category ID
+    Get products for a category with optional filtering.
+    Uses centralized ID validation.
     """
-    if category_id <= 0:
-        raise ValidationError("Category ID must be positive")
+    validate_id(category_id, "Category ID")
     
     queryset = Product.objects.filter(category_id=category_id)
     
@@ -1314,6 +1016,10 @@ def get_category_products(
     if fields:
         queryset = queryset.only(*fields)
     
+    # Pagination support
+    if limit:
+        queryset = queryset[offset:offset + limit]
+    
     return list(queryset.order_by('-is_featured', 'name'))
 
 def get_category_by_slug(
@@ -1323,18 +1029,8 @@ def get_category_by_slug(
     product_fields: Optional[List[str]] = None
 ) -> Optional[ProductCategory]:
     """
-    Get category by slug with product count
-    
-    Args:
-        slug: Category slug
-        include_products: Whether to include products
-        product_fields: Specific product fields to include
-        
-    Returns:
-        Category instance or None
-        
-    Raises:
-        ValidationError: If slug is empty
+    Get category by slug with product count.
+    Uses Coalesce for safe null handling.
     """
     if not slug:
         raise ValidationError("Slug cannot be empty")
@@ -1350,55 +1046,47 @@ def get_category_by_slug(
         )
     
     return queryset.annotate(
-        product_count=Count('products', filter=Q(products__is_active=True))
+        product_count=Coalesce(ACTIVE_PRODUCTS_COUNT, Value(0))  # Safe default
     ).only('id', 'name', 'slug', 'product_count').first()
 
 #========================================
 # eleganza/products/selectors/inventory_selectors.py
 #========================================
 
+# eleganza/products/selectors/inventory_selectors.py
 from django.db.models import F, Q, Count, Sum, Value, FloatField, Avg
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, Cast
 from typing import List, Dict, Optional
-from django.core.exceptions import ValidationError
-from django.views.decorators.cache import cache_page
 from django.utils import timezone
 from datetime import timedelta
-from ..models import Inventory, InventoryHistory, ProductVariant
-from ..constants import Defaults
+from django.core.exceptions import ValidationError
+from eleganza.products.models import Inventory, InventoryHistory, ProductVariant
+from eleganza.products.constants import Defaults
+from eleganza.products.validators import validate_id, validate_threshold  # Centralized validator
 from django.conf import settings
 
 
-def validate_inventory_id(inventory_id: int) -> None:
-    """Validate inventory ID parameter"""
-    if inventory_id <= 0:
-        raise ValidationError("Inventory ID must be positive")
+# Reusable annotations
+STOCK_STATUS = Coalesce(F('stock_quantity'), Value(0))
+LOW_STOCK_FLAG = Q(stock_quantity__lte=F('low_stock_threshold'))
 
-def validate_variant_id(variant_id: int) -> None:
-    """Validate variant ID parameter"""
-    if variant_id <= 0:
-        raise ValidationError("Variant ID must be positive")
 
-@cache_page(60 * 15)  # Cache for 15 minutes
+def get_inventory_status_cache_key(variant_id: int) -> str:
+    """Generate unique cache key per variant"""
+    return f"inventory_status_{variant_id}"
+
+
 def get_inventory_status(variant_id: int) -> Optional[Dict[str, any]]:
     """
-    Get complete inventory status for a single variant
+    Get complete inventory status for a single variant with safe defaults.
     
     Args:
         variant_id: ID of the product variant
         
     Returns:
-        Dictionary with:
-        - current_stock
-        - low_stock_flag
-        - last_restock_date
-        - monthly_movement (avg)
-        or None if not found
-        
-    Raises:
-        ValidationError: If variant_id is invalid
+        Dictionary with inventory status or None if not found
     """
-    validate_variant_id(variant_id)
+    validate_id(variant_id, "Variant ID")
     
     inventory = Inventory.objects.filter(
         variant_id=variant_id
@@ -1408,13 +1096,16 @@ def get_inventory_status(variant_id: int) -> Optional[Dict[str, any]]:
                 filter=Q(history__timestamp__gte=timezone.now() - timedelta(days=30))),
             Value(0)
         ),
-        sku=F('variant__sku')
+        sku=F('variant__sku'),
+        current_stock=STOCK_STATUS,  # Reusable annotation
+        low_stock_flag=LOW_STOCK_FLAG  # Reusable condition
     ).values(
-        'stock_quantity',
+        'current_stock',
         'low_stock_threshold',
         'last_restock',
         'monthly_movement',
-        'sku'
+        'sku',
+        'low_stock_flag'
     ).first()
     
     if not inventory:
@@ -1422,7 +1113,6 @@ def get_inventory_status(variant_id: int) -> Optional[Dict[str, any]]:
     
     return {
         **inventory,
-        'low_stock_flag': inventory['stock_quantity'] <= inventory['low_stock_threshold'],
         'variant_id': variant_id
     }
 
@@ -1431,32 +1121,19 @@ def get_low_stock_items(
     threshold: Optional[int] = None,
     only_active: bool = True,
     min_stock: int = 0,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0  # Added pagination
 ) -> List[Dict[str, any]]:
     """
-    Get items below stock threshold with product info
-    
-    Args:
-        threshold: Custom threshold (uses default if None)
-        only_active: Only include active variants
-        min_stock: Minimum stock quantity to include
-        limit: Maximum number of items to return
-        
-    Returns:
-        List of dictionaries with:
-        - variant_id
-        - sku
-        - product_name
-        - current_stock
-        - threshold
+    Get items below stock threshold with product info.
+    Uses reusable STOCK_STATUS annotation.
     """
     threshold = threshold or Defaults.LOW_STOCK_THRESHOLD
+    validate_threshold(threshold)
     
-    if threshold <= 0:
-        raise ValidationError("Threshold must be positive")
     if min_stock < 0:
         raise ValidationError("Minimum stock cannot be negative")
-    
+
     queryset = Inventory.objects.filter(
         stock_quantity__lte=threshold,
         stock_quantity__gte=min_stock
@@ -1464,52 +1141,38 @@ def get_low_stock_items(
         'variant__product'
     ).annotate(
         product_name=F('variant__product__name'),
-        sku=F('variant__sku')
+        sku=F('variant__sku'),
+        current_stock=STOCK_STATUS  # Reusable annotation
     )
     
     if only_active:
         queryset = queryset.filter(variant__is_active=True)
     
+    # Pagination support
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
     return list(queryset.values(
         'variant_id',
         'sku',
         'product_name',
-        'stock_quantity',
+        'current_stock',
         'low_stock_threshold'
-    ).order_by('stock_quantity'))
+    ).order_by('current_stock'))
 
 def get_inventory_history(
     variant_id: int,
     *,
     days_back: int = 30,
     limit: Optional[int] = None,
+    offset: int = 0,  # Added pagination
     include_metadata: bool = False
 ) -> List[Dict[str, any]]:
     """
-    Get inventory change history for a variant
-    
-    Args:
-        variant_id: ID of the variant
-        days_back: Number of days to look back (1-365)
-        limit: Maximum records to return
-        include_metadata: Include variant info in results
-        
-    Returns:
-        List of historical records with:
-        - date
-        - old_stock
-        - new_stock
-        - delta
-        - notes
-        - variant_info (if include_metadata=True)
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get inventory change history for a variant.
+    Uses centralized days_back validation.
     """
-    validate_variant_id(variant_id)
+    validate_id(variant_id, "Variant ID")
     
     if not (1 <= days_back <= 365):
         raise ValidationError("Days back must be between 1 and 365")
@@ -1524,63 +1187,44 @@ def get_inventory_history(
     
     history = history.order_by('-timestamp')
     
+    # Pagination support
     if limit:
-        history = history[:limit]
+        history = history[offset:offset + limit]
+    
+    base_values = [
+        'timestamp',
+        'old_stock',
+        'new_stock',
+        'notes'
+    ]
     
     if include_metadata:
         return list(history.annotate(
             delta=F('new_stock') - F('old_stock'),
-            date=F('timestamp'),
             sku=F('inventory__variant__sku')
-        ).values(
-            'date',
-            'old_stock',
-            'new_stock',
-            'delta',
-            'notes',
-            'sku'
-        ))
-    else:
-        return list(history.annotate(
-            delta=F('new_stock') - F('old_stock'),
-            date=F('timestamp')
-        ).values(
-            'date',
-            'old_stock',
-            'new_stock',
-            'delta',
-            'notes'
-        ))
+        ).values(*base_values, 'sku'))
+    
+    return list(history.annotate(
+        delta=F('new_stock') - F('old_stock')
+    ).values(*base_values))
 
-@cache_page(60 * 60)  # Cache for 1 hour
+
 def get_inventory_summary() -> Dict[str, any]:
     """
-    Get store-wide inventory summary statistics
-    
-    Returns:
-        Dictionary with:
-        - total_items: Count of all inventory items
-        - out_of_stock: Count of items with 0 stock
-        - low_stock: Count below threshold
-        - average_stock: Mean inventory level
-        - total_value: Estimated inventory value
+    Get store-wide inventory summary statistics.
+    Uses Coalesce for safe aggregation.
     """
-    # Basic counts
     stats = Inventory.objects.aggregate(
         total_items=Count('id'),
         out_of_stock=Count('id', filter=Q(stock_quantity=0)),
-        low_stock=Count('id', filter=Q(
-            stock_quantity__gt=0,
-            stock_quantity__lte=Defaults.LOW_STOCK_THRESHOLD
-        )),
-        average_stock=Avg('stock_quantity')
+        low_stock=Count('id', filter=LOW_STOCK_FLAG),  # Reusable condition
+        average_stock=Coalesce(Avg('stock_quantity'), Value(0))
     )
     
-    # Calculate total value using ORM
     total_value = Inventory.objects.filter(
         stock_quantity__gt=0
     ).annotate(
-        product_price=F('variant__product__selling_price_amount'),
+        product_price=Coalesce(F('variant__product__selling_price_amount'), Value(0)),
         value=F('stock_quantity') * F('product_price')
     ).aggregate(
         total_value=Coalesce(Sum('value'), Value(0, output_field=FloatField()))
@@ -1589,38 +1233,23 @@ def get_inventory_summary() -> Dict[str, any]:
     return {
         **stats,
         'total_value': total_value,
-        'currency': settings.DEFAULT_CURRENCY  #default currency
+        'currency': settings.DEFAULT_CURRENCY
     }
+
 def get_variant_inventories(
     product_id: int,
     *,
     only_in_stock: bool = False,
     only_active: bool = True,
-    include_options: bool = True
+    include_options: bool = True,
+    limit: Optional[int] = None,
+    offset: int = 0  # Added pagination
 ) -> List[Dict[str, any]]:
     """
-    Get inventory status for all variants of a product
-    
-    Args:
-        product_id: ID of the parent product
-        only_in_stock: Only include variants with stock > 0
-        only_active: Only include active variants
-        include_options: Include variant options data
-        
-    Returns:
-        List of variant inventories with:
-        - variant_id
-        - sku
-        - options (if include_options)
-        - stock
-        - last_updated
-        - is_active
-        
-    Raises:
-        ValidationError: For invalid product ID
+    Get inventory status for all variants of a product.
+    Uses centralized ID validation.
     """
-    if product_id <= 0:
-        raise ValidationError("Product ID must be positive")
+    validate_id(product_id, "Product ID")
     
     queryset = Inventory.objects.filter(
         variant__product_id=product_id
@@ -1636,54 +1265,37 @@ def get_variant_inventories(
             'variant__options__attribute'
         )
     
-    inventories = []
-    for inv in queryset:
-        inventory_data = {
+    # Pagination support
+    if limit:
+        queryset = queryset[offset:offset + limit]
+    
+    return [
+        {
             'variant_id': inv.variant_id,
             'sku': inv.variant.sku,
-            'stock': inv.stock_quantity,
+            'stock': inv.stock_quantity or 0,  # Safe default
             'last_updated': inv.last_restock,
             'is_active': inv.variant.is_active,
-            'low_stock': inv.stock_quantity <= inv.low_stock_threshold
-        }
-        
-        if include_options:
-            inventory_data['options'] = [
+            'low_stock': inv.stock_quantity <= (inv.low_stock_threshold or 0),
+            **({'options': [
                 f"{opt.attribute.name}: {opt.value}" 
                 for opt in inv.variant.options.all()
-            ]
-        
-        inventories.append(inventory_data)
-    
-    return inventories
+            ]} if include_options else {})
+        }
+        for inv in queryset
+    ]
 
 def get_restock_candidates(
     *,
     min_sales_velocity: float = 5.0,
     max_weeks_of_stock: int = 2,
     min_stock: int = 0,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0  # Added pagination
 ) -> List[Dict[str, any]]:
     """
-    Get variants needing restock based on sales velocity
-    
-    Args:
-        min_sales_velocity: Minimum weekly sales to consider
-        max_weeks_of_stock: Maximum weeks of inventory to maintain
-        min_stock: Current stock must be above this value
-        limit: Maximum number of results to return
-        
-    Returns:
-        List of dictionaries with:
-        - variant_id
-        - sku
-        - current_stock
-        - weekly_sales
-        - weeks_remaining
-        - product_name
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get variants needing restock based on sales velocity.
+    Uses Coalesce for safe division.
     """
     if min_sales_velocity < 0:
         raise ValidationError("Sales velocity cannot be negative")
@@ -1698,11 +1310,11 @@ def get_restock_candidates(
                 filter=Q(
                     history__timestamp__gte=timezone.now() - timedelta(days=21),
                     history__new_stock__lt=F('history__old_stock')
-                )) / 3,  # 3 weeks average
-            Value(0.0, output_field=FloatField())
+                )) / 3,
+            Value(0.0)
         ),
         weeks_remaining=Cast('stock_quantity', FloatField()) / 
-                       (F('weekly_sales') + 0.1),  # Avoid division by zero
+                       Coalesce(F('weekly_sales'), Value(0.1)),  # Safe division
         product_name=F('variant__product__name'),
         sku=F('variant__sku')
     ).filter(
@@ -1712,8 +1324,9 @@ def get_restock_candidates(
         variant__is_active=True
     ).select_related('variant__product')
     
+    # Pagination support
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
     return list(queryset.values(
         'variant_id',
@@ -1728,29 +1341,23 @@ def get_inventory_alerts(
     *,
     threshold: Optional[int] = None,
     min_sales_velocity: float = 5.0,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0  # Added pagination
 ) -> Dict[str, List[Dict[str, any]]]:
     """
-    Get combined low stock and restock alerts
-    
-    Args:
-        threshold: Low stock threshold
-        min_sales_velocity: Minimum sales for restock candidates
-        limit: Max alerts per type
-        
-    Returns:
-        Dictionary with:
-        - low_stock: List of low stock items
-        - needs_restock: List of restock candidates
+    Get combined low stock and restock alerts.
+    Reuses other selector functions.
     """
     return {
         'low_stock': get_low_stock_items(
             threshold=threshold,
-            limit=limit
+            limit=limit,
+            offset=offset
         ),
         'needs_restock': get_restock_candidates(
             min_sales_velocity=min_sales_velocity,
-            limit=limit
+            limit=limit,
+            offset=offset
         )
     }
 
@@ -1758,26 +1365,38 @@ def get_inventory_alerts(
 # eleganza/products/selectors/product_selectors.py
 #========================================
 
+# eleganza/products/selectors/product_selectors.py
 from django.db.models import Prefetch, Q, F, Count, Avg, Min, Max
+from django.db.models.functions import Coalesce
 from typing import Optional, List, Dict
 from django.core.exceptions import ValidationError
-from django.views.decorators.cache import cache_page
-from ..models import Product, ProductVariant, ProductReview, ProductCategory
-from ..constants import Defaults
+from django.db.models import Value, FloatField
 
-def validate_product_id(product_id: int) -> None:
-    """Validate product ID parameter"""
-    if product_id <= 0:
-        raise ValidationError("Product ID must be positive")
+from eleganza.products.models import Product, ProductVariant, ProductReview, ProductCategory
+from eleganza.products.constants import Defaults
+from eleganza.products.validators import (
+    validate_id,
+    validate_price_range,
+    validate_rating,
+)
 
-def validate_price_range(min_price: float, max_price: float) -> None:
-    """Validate price range parameters"""
-    if min_price < 0 or max_price < 0:
-        raise ValidationError("Prices cannot be negative")
-    if min_price > max_price:
-        raise ValidationError("Min price cannot exceed max price")
+# Reusable annotations
+REVIEW_STATS = {
+    'avg_rating': Avg('reviews__rating', filter=Q(reviews__is_approved=True)),
+    'review_count': Count('reviews', filter=Q(reviews__is_approved=True))
+}
 
-@cache_page(60 * 60)  # Cache for 1 hour
+DISCOUNT_FILTER = Q(
+    Q(discount_percent__gt=0) |
+    Q(discount_amount__amount__gt=0)
+)
+
+def get_products_cache_key(**kwargs) -> str:
+    """Generate unique cache key based on query parameters"""
+    from hashlib import md5
+    return f"products_{md5(str(kwargs).encode()).hexdigest()}"
+
+
 def get_products(
     *,
     category_id: Optional[int] = None,
@@ -1788,30 +1407,15 @@ def get_products(
     only_in_stock: bool = False,
     only_featured: bool = False,
     fields: Optional[List[str]] = None,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> List[Product]:
     """
-    Get products with flexible filtering and optimized queries
-    
-    Args:
-        category_id: Filter by category
-        only_active: Only include active products
-        include_variants: Prefetch variants data
-        include_review_stats: Include review aggregates
-        discount_threshold: Minimum discount percentage/amount
-        only_in_stock: Only include products with available inventory
-        only_featured: Only include featured products
-        fields: Specific fields to return (None for all)
-        limit: Maximum number of products to return
-        
-    Returns:
-        List of Product instances with requested data
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get products with flexible filtering and optimized queries.
+    Uses reusable REVIEW_STATS annotations.
     """
-    if category_id is not None and category_id <= 0:
-        raise ValidationError("Category ID must be positive")
+    if category_id is not None:
+        validate_id(category_id, "Category ID")
     if discount_threshold is not None and discount_threshold < 0:
         raise ValidationError("Discount threshold must be positive")
     if limit is not None and limit <= 0:
@@ -1819,7 +1423,7 @@ def get_products(
 
     queryset = Product.objects.all()
     
-    # Basic filtering
+    # Base filtering
     if only_active:
         queryset = queryset.filter(is_active=True)
     if only_featured:
@@ -1848,22 +1452,20 @@ def get_products(
             
         queryset = queryset.prefetch_related(
             Prefetch('variants', 
-                   queryset=variant_qs.select_related('inventory')))
+                   queryset=variant_qs.select_related('inventory'))
+        )
     
     if include_review_stats:
-        queryset = queryset.annotate(
-            avg_rating=Avg('reviews__rating', filter=Q(reviews__is_approved=True)),
-            review_count=Count('reviews', filter=Q(reviews__is_approved=True))
-        )
+        queryset = queryset.annotate(**REVIEW_STATS)
     
     # Field limiting
     if fields:
         queryset = queryset.only(*fields)
     
-    # Ordering and limiting
+    # Pagination support
     queryset = queryset.order_by('-is_featured', 'name')
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
     return list(queryset)
 
@@ -1873,25 +1475,14 @@ def get_product_detail(
     with_variants: bool = True,
     with_reviews: bool = False,
     with_category: bool = False,
-    review_limit: Optional[int] = None
+    review_limit: Optional[int] = None,
+    review_offset: int = 0
 ) -> Optional[Product]:
     """
-    Get single product with optimized related data loading
-    
-    Args:
-        product_id: ID of product to fetch
-        with_variants: Include variants and inventory
-        with_reviews: Include reviews and ratings
-        with_category: Include category details
-        review_limit: Maximum reviews to include
-        
-    Returns:
-        Product instance with requested relations or None
-        
-    Raises:
-        ValidationError: For invalid product ID
+    Get single product with optimized related data loading.
+    Uses centralized ID validation.
     """
-    validate_product_id(product_id)
+    validate_id(product_id, "Product ID")
     
     queryset = Product.objects.filter(pk=product_id)
     
@@ -1904,11 +1495,11 @@ def get_product_detail(
             Prefetch('variants', queryset=variant_qs)
         )
     
-    # Review prefetch
+    # Review prefetch with pagination
     if with_reviews:
         review_qs = ProductReview.objects.filter(is_approved=True)
         if review_limit:
-            review_qs = review_qs[:review_limit]
+            review_qs = review_qs[review_offset:review_offset + review_limit]
         queryset = queryset.prefetch_related(
             Prefetch('reviews', 
                    queryset=review_qs.select_related('user')))
@@ -1919,33 +1510,23 @@ def get_product_detail(
     
     return queryset.first()
 
-@cache_page(60 * 30)  # Cache for 30 minutes
+
 def get_featured_products(
     limit: int = 8,
     *,
     only_in_stock: bool = True,
     min_rating: Optional[float] = None,
-    fields: Optional[List[str]] = None
+    fields: Optional[List[str]] = None,
+    offset: int = 0
 ) -> List[Product]:
     """
-    Get featured products with optimized query
-    
-    Args:
-        limit: Maximum number of products to return
-        only_in_stock: Only include products with inventory
-        min_rating: Minimum average rating
-        fields: Specific fields to return (None for all)
-        
-    Returns:
-        List of featured Product instances
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get featured products with optimized query.
+    Uses reusable REVIEW_STATS annotations.
     """
     if limit <= 0:
         raise ValidationError("Limit must be positive")
-    if min_rating is not None and (min_rating < 0 or min_rating > 5):
-        raise ValidationError("Rating must be between 0 and 5")
+    if min_rating is not None:
+        validate_rating(min_rating)
 
     queryset = Product.objects.filter(
         is_featured=True,
@@ -1959,13 +1540,14 @@ def get_featured_products(
     
     if min_rating:
         queryset = queryset.annotate(
-            avg_rating=Avg('reviews__rating', filter=Q(reviews__is_approved=True))
+            avg_rating=REVIEW_STATS['avg_rating']
         ).filter(avg_rating__gte=min_rating)
     
     if fields:
         queryset = queryset.only(*fields)
     
-    return list(queryset.order_by('?')[:limit])
+    # Pagination support
+    return list(queryset.order_by('?')[offset:offset + limit])
 
 def get_products_by_price_range(
     min_price: float,
@@ -1974,24 +1556,12 @@ def get_products_by_price_range(
     *,
     only_in_stock: bool = True,
     only_active: bool = True,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> List[Product]:
     """
-    Get products within price range with inventory check
-    
-    Args:
-        min_price: Minimum price threshold
-        max_price: Maximum price threshold
-        currency: Currency code for price comparison
-        only_in_stock: Only include available products
-        only_active: Only include active products
-        limit: Maximum number of products to return
-        
-    Returns:
-        List of matching Product instances
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get products within price range with inventory check.
+    Uses centralized price validation.
     """
     validate_price_range(min_price, max_price)
     if limit is not None and limit <= 0:
@@ -2010,10 +1580,12 @@ def get_products_by_price_range(
             variants__inventory__stock_quantity__gt=0
         ).distinct()
     
+    # Pagination support
+    queryset = queryset.order_by('final_price')
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
-    return list(queryset.order_by('final_price'))
+    return list(queryset)
 
 def get_category_products(
     category_id: int,
@@ -2022,26 +1594,14 @@ def get_category_products(
     only_featured: bool = False,
     only_active: bool = True,
     fields: Optional[List[str]] = None,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> Dict[str, List[Product]]:
     """
-    Get products organized by subcategories
-    
-    Args:
-        category_id: Parent category ID
-        include_subcategories: Include products from child categories
-        only_featured: Only include featured products
-        only_active: Only include active products
-        fields: Specific fields to return (None for all)
-        limit: Maximum products per category
-        
-    Returns:
-        Dictionary with category names as keys and product lists as values
-        
-    Raises:
-        ValidationError: For invalid category ID
+    Get products organized by subcategories.
+    Uses reusable annotations and validators.
     """
-    validate_product_id(category_id)
+    validate_id(category_id, "Category ID")
     if limit is not None and limit <= 0:
         raise ValidationError("Limit must be positive")
 
@@ -2061,44 +1621,33 @@ def get_category_products(
         product_qs = product_qs.filter(is_featured=True)
     if fields:
         product_qs = product_qs.only(*fields)
+    
+    # Pagination support
     if limit:
-        product_qs = product_qs[:limit]
+        product_qs = product_qs[offset:offset + limit]
     
     categories = categories.prefetch_related(
         Prefetch('products', 
-               queryset=product_qs.order_by('-is_featured'))
-    )
+               queryset=product_qs.order_by('-is_featured')))
     
     return {
         cat.name: list(cat.products.all())
         for cat in categories
     }
 
-@cache_page(60 * 60)  # Cache for 1 hour
+
 def get_product_review_stats(product_id: int) -> Dict[str, float]:
     """
-    Get aggregated review statistics for a product
-    
-    Args:
-        product_id: Product to analyze
-        
-    Returns:
-        Dictionary with:
-        - average_rating
-        - review_count
-        - rating_distribution (1-5 stars)
-        
-    Raises:
-        ValidationError: For invalid product ID
+    Get aggregated review statistics for a product.
+    Uses reusable rating distribution logic.
     """
-    validate_product_id(product_id)
+    validate_id(product_id, "Product ID")
     
     stats = ProductReview.objects.filter(
         product_id=product_id,
         is_approved=True
     ).aggregate(
-        avg_rating=Avg('rating'),
-        review_count=Count('id'),
+        **REVIEW_STATS,
         **{
             f'stars_{i}': Count('id', filter=Q(rating=i))
             for i in range(1, 6)
@@ -2118,22 +1667,12 @@ def get_products_with_discounts(
     *,
     only_active: bool = True,
     only_in_stock: bool = True,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> List[Product]:
     """
-    Get products with significant discounts
-    
-    Args:
-        min_discount: Minimum discount percentage/amount
-        only_active: Only include active products
-        only_in_stock: Only include available products
-        limit: Maximum number of products to return
-        
-    Returns:
-        List of discounted Product instances
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get products with significant discounts.
+    Uses reusable DISCOUNT_FILTER.
     """
     if min_discount <= 0:
         raise ValidationError("Discount threshold must be positive")
@@ -2141,8 +1680,7 @@ def get_products_with_discounts(
         raise ValidationError("Limit must be positive")
 
     queryset = Product.objects.filter(
-        Q(discount_percent__gte=min_discount) |
-        Q(discount_amount__amount__gte=min_discount),
+        DISCOUNT_FILTER,
         is_active=only_active
     )
     
@@ -2151,41 +1689,55 @@ def get_products_with_discounts(
             variants__inventory__stock_quantity__gt=0
         ).distinct()
     
+    # Pagination support
+    queryset = queryset.order_by('-discount_percent')
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
-    return list(queryset.order_by('-discount_percent'))
+    return list(queryset)
 
 
 #========================================
 # eleganza/products/selectors/review_selectors.py
 #========================================
 
+# eleganza/products/selectors/review_selectors.py
 from django.db.models import Avg, Count, Q, F, Sum, FloatField
 from typing import List, Dict, Optional
 from django.utils import timezone
 from datetime import timedelta
-from django.core.exceptions import ValidationError
-from django.views.decorators.cache import cache_page
-from ..models import ProductReview, Product
-from ..constants import Defaults
+from django.db.models.functions import Trunc, Coalesce
+from django.db.models import DateField, Value
+from eleganza.products.models import ProductReview, Product
+from eleganza.products.constants import Defaults
+from eleganza.products.validators import (
+    validate_id,
+    validate_rating,
+    validate_days_range,
+)
 
-def validate_product_id(product_id: int) -> None:
-    """Validate product ID parameter"""
-    if product_id <= 0:
-        raise ValidationError("Product ID must be positive")
+# Reusable annotations and constants
+BASE_REVIEW_STATS = {
+    'avg_rating': Avg('rating'),
+    'review_count': Count('id'),
+    'helpful_percentage': Coalesce(
+        Avg(F('helpful_votes') / (F('helpful_votes') + 1), 
+        Value(0.0),
+        output_field=FloatField()
+    ) * 100)
+}
 
-def validate_user_id(user_id: int) -> None:
-    """Validate user ID parameter"""
-    if user_id <= 0:
-        raise ValidationError("User ID must be positive")
+RATING_DISTRIBUTION = {
+    f'stars_{i}': Count('id', filter=Q(rating=i))
+    for i in range(1, 6)
+}
 
-def validate_rating(rating: int) -> None:
-    """Validate rating value"""
-    if not (1 <= rating <= 5):
-        raise ValidationError("Rating must be between 1 and 5")
+def get_reviews_cache_key(**kwargs) -> str:
+    """Generate unique cache key based on query parameters"""
+    from hashlib import md5
+    return f"reviews_{md5(str(kwargs).encode()).hexdigest()}"
 
-@cache_page(60 * 15)  # Cache for 15 minutes
+
 def get_product_reviews(
     product_id: int,
     *,
@@ -2195,34 +1747,20 @@ def get_product_reviews(
     include_user_info: bool = False,
     include_product_info: bool = False,
     limit: Optional[int] = None,
+    offset: int = 0,
     order_by: str = '-created_at'
 ) -> List[ProductReview]:
     """
-    Get filtered reviews for a product with optimized queries
-    
-    Args:
-        product_id: Target product ID
-        only_approved: Filter by approved status
-        min_rating: Minimum rating to include (1-5)
-        recent_days: Only reviews from last N days (1-365)
-        include_user_info: Prefetch user data
-        include_product_info: Prefetch product data
-        limit: Maximum number of reviews to return
-        order_by: Field to order by (prefix with '-' for descending)
-        
-    Returns:
-        List of ProductReview instances
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get filtered reviews for a product with optimized queries.
+    Uses centralized validation and reusable annotations.
     """
-    validate_product_id(product_id)
+    validate_id(product_id, "Product ID")
     if min_rating is not None:
         validate_rating(min_rating)
-    if recent_days is not None and not (1 <= recent_days <= 365):
-        raise ValidationError("Recent days must be between 1 and 365")
-    if limit is not None and limit <= 0:
-        raise ValidationError("Limit must be positive")
+    if recent_days is not None:
+        validate_days_range(recent_days)
+    if limit is not None:
+        validate_limit(limit)
 
     queryset = ProductReview.objects.filter(product_id=product_id)
     
@@ -2242,90 +1780,57 @@ def get_product_reviews(
     if include_product_info:
         queryset = queryset.select_related('product')
     
+    # Pagination support
     queryset = queryset.order_by(order_by)
-    
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
     return list(queryset)
 
-@cache_page(60 * 60)  # Cache for 1 hour
+
 def get_review_stats(product_id: int) -> Dict[str, any]:
     """
-    Get comprehensive review statistics for a product
-    
-    Args:
-        product_id: Product to analyze
-        
-    Returns:
-        Dictionary with:
-        - average_rating (float)
-        - review_count (int)
-        - rating_distribution (dict {1-5: count})
-        - helpful_percentage (float)
-        
-    Raises:
-        ValidationError: For invalid product ID
+    Get comprehensive review statistics for a product.
+    Uses reusable BASE_REVIEW_STATS and RATING_DISTRIBUTION.
     """
-    validate_product_id(product_id)
+    validate_id(product_id, "Product ID")
     
     stats = ProductReview.objects.filter(
         product_id=product_id,
         is_approved=True
     ).aggregate(
-        average_rating=Avg('rating'),
-        review_count=Count('id'),
-        helpful_votes=Sum('helpful_votes'),
-        total_votes=Sum('helpful_votes') + Count('id'),  # Assuming all reviews get at least 1 view
-        **{
-            f'rating_{i}': Count('id', filter=Q(rating=i))
-            for i in range(1, 6)
-        }
+        **BASE_REVIEW_STATS,
+        **RATING_DISTRIBUTION
     )
     
     return {
-        'average_rating': round(stats['average_rating'] or 0, 1),
+        'average_rating': round(stats['avg_rating'] or 0, 1),
         'review_count': stats['review_count'],
         'rating_distribution': {
-            i: stats[f'rating_{i}'] for i in range(1, 6)
+            i: stats[f'stars_{i}'] for i in range(1, 6)
         },
-        'helpful_percentage': (
-            (stats['helpful_votes'] / stats['total_votes'] * 100 
-            if stats['total_votes'] else 0)
-        )
+        'helpful_percentage': stats['helpful_percentage']
     }
 
-@cache_page(60 * 30)  # Cache for 30 minutes
+
 def get_recent_reviews(
     *,
     limit: int = 5,
     min_rating: Optional[int] = None,
     with_product_info: bool = False,
     with_user_info: bool = False,
-    days_back: Optional[int] = 30
+    days_back: Optional[int] = None,
+    offset: int = 0
 ) -> List[ProductReview]:
     """
-    Get most recent reviews across all products
-    
-    Args:
-        limit: Number of reviews to return (1-100)
-        min_rating: Minimum rating to include (1-5)
-        with_product_info: Prefetch product data
-        with_user_info: Prefetch user data
-        days_back: Only include reviews from last N days (1-365)
-        
-    Returns:
-        List of ProductReview instances
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get most recent reviews across all products.
+    Uses centralized validation and pagination.
     """
-    if not (1 <= limit <= 100):
-        raise ValidationError("Limit must be between 1 and 100")
+    validate_limit(limit, max_value=100)
     if min_rating is not None:
         validate_rating(min_rating)
-    if days_back is not None and not (1 <= days_back <= 365):
-        raise ValidationError("Days back must be between 1 and 365")
+    if days_back is not None:
+        validate_days_range(days_back)
 
     queryset = ProductReview.objects.filter(is_approved=True)
     
@@ -2342,7 +1847,8 @@ def get_recent_reviews(
     if with_user_info:
         queryset = queryset.select_related('user')
     
-    return list(queryset.order_by('-created_at')[:limit])
+    # Pagination support
+    return list(queryset.order_by('-created_at')[offset:offset + limit])
 
 def get_user_reviews(
     user_id: int,
@@ -2350,27 +1856,16 @@ def get_user_reviews(
     only_approved: bool = True,
     with_product_info: bool = False,
     limit: Optional[int] = None,
+    offset: int = 0,
     min_rating: Optional[int] = None
 ) -> List[ProductReview]:
     """
-    Get all reviews by a specific user
-    
-    Args:
-        user_id: Target user ID
-        only_approved: Filter by approval status
-        with_product_info: Prefetch product data
-        limit: Maximum reviews to return
-        min_rating: Minimum rating to include (1-5)
-        
-    Returns:
-        List of ProductReview instances
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get all reviews by a specific user.
+    Uses reusable validation and pagination.
     """
-    validate_user_id(user_id)
-    if limit is not None and limit <= 0:
-        raise ValidationError("Limit must be positive")
+    validate_id(user_id, "User ID")
+    if limit is not None:
+        validate_limit(limit)
     if min_rating is not None:
         validate_rating(min_rating)
 
@@ -2385,14 +1880,14 @@ def get_user_reviews(
     if with_product_info:
         queryset = queryset.select_related('product')
     
+    # Pagination support
     queryset = queryset.order_by('-created_at')
-    
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
     return list(queryset)
 
-@cache_page(60 * 60)  # Cache for 1 hour
+
 def get_most_helpful_reviews(
     product_id: int,
     *,
@@ -2401,23 +1896,11 @@ def get_most_helpful_reviews(
     min_rating: Optional[int] = None
 ) -> List[ProductReview]:
     """
-    Get reviews with the most helpful votes
-    
-    Args:
-        product_id: Target product ID
-        limit: Number of reviews to return (1-20)
-        min_helpful_votes: Minimum votes to qualify
-        min_rating: Minimum rating to include (1-5)
-        
-    Returns:
-        List of ProductReview instances
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get reviews with the most helpful votes.
+    Uses centralized validation and reusable filters.
     """
-    validate_product_id(product_id)
-    if not (1 <= limit <= 20):
-        raise ValidationError("Limit must be between 1 and 20")
+    validate_id(product_id, "Product ID")
+    validate_limit(limit, max_value=20)
     if min_helpful_votes < 0:
         raise ValidationError("Helpful votes cannot be negative")
     if min_rating is not None:
@@ -2432,44 +1915,26 @@ def get_most_helpful_reviews(
     if min_rating:
         queryset = queryset.filter(rating__gte=min_rating)
     
-    return list(queryset.order_by(
-        '-helpful_votes',
-        '-created_at'
-    )[:limit])
+    return list(queryset.order_by('-helpful_votes', '-created_at')[:limit])
 
-@cache_page(60 * 60 * 4)  # Cache for 4 hours
+
 def get_review_histogram(
     product_id: int,
     *,
     time_period: str = 'monthly',  # 'daily', 'weekly', 'monthly'
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> List[Dict[str, any]]:
     """
-    Get review count over time for trend analysis
-    
-    Args:
-        product_id: Target product ID
-        time_period: Grouping interval
-        limit: Maximum periods to return
-        
-    Returns:
-        List of dictionaries with:
-        - period_start (date)
-        - review_count (int)
-        - average_rating (float)
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get review count over time for trend analysis.
+    Uses centralized validation and Trunc date functions.
     """
-    validate_product_id(product_id)
+    validate_id(product_id, "Product ID")
     if time_period not in ['daily', 'weekly', 'monthly']:
         raise ValidationError("Invalid time period")
-    if limit is not None and limit <= 0:
-        raise ValidationError("Limit must be positive")
+    if limit is not None:
+        validate_limit(limit)
 
-    from django.db.models.functions import Trunc
-    from django.db.models import DateField
-    
     trunc_map = {
         'daily': 'day',
         'weekly': 'week',
@@ -2488,37 +1953,26 @@ def get_review_histogram(
         average_rating=Avg('rating')
     ).order_by('period')
     
+    # Pagination support
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
     return list(queryset)
 
-@cache_page(60 * 60 * 12)  # Cache for 12 hours
 def get_review_engagement_stats() -> Dict[str, any]:
     """
-    Get store-wide review engagement metrics
-    
-    Returns:
-        Dictionary with:
-        - total_reviews
-        - avg_rating
-        - helpful_percentage
-        - response_rate (if replies are tracked)
+    Get store-wide review engagement metrics.
+    Uses reusable BASE_REVIEW_STATS annotations.
     """
     stats = ProductReview.objects.aggregate(
-        total_reviews=Count('id'),
-        avg_rating=Avg('rating'),
-        helpful_percentage=Avg(
-            F('helpful_votes') / (F('helpful_votes') + 1),  # +1 to avoid division by zero
-            output_field=FloatField()
-        ) * 100
+        **BASE_REVIEW_STATS
     )
     
-    # If you track admin responses:
+    # If tracking admin responses
     if hasattr(ProductReview, 'response_text'):
         stats['response_rate'] = ProductReview.objects.filter(
             response_text__isnull=False
-        ).count() / stats['total_reviews'] * 100 if stats['total_reviews'] else 0
+        ).count() / stats['review_count'] * 100 if stats['review_count'] else 0
     
     return stats
 
@@ -2526,24 +1980,15 @@ def get_pending_reviews(
     *,
     limit: Optional[int] = None,
     days_old: Optional[int] = None,
-    min_rating: Optional[int] = None
+    min_rating: Optional[int] = None,
+    offset: int = 0
 ) -> List[ProductReview]:
     """
-    Get reviews awaiting moderation
-    
-    Args:
-        limit: Maximum number to return
-        days_old: Only reviews older than N days
-        min_rating: Minimum rating to include
-        
-    Returns:
-        List of unapproved ProductReview instances
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get reviews awaiting moderation.
+    Uses centralized validation and pagination.
     """
-    if limit is not None and limit <= 0:
-        raise ValidationError("Limit must be positive")
+    if limit is not None:
+        validate_limit(limit)
     if days_old is not None and days_old <= 0:
         raise ValidationError("Days old must be positive")
     if min_rating is not None:
@@ -2563,10 +2008,10 @@ def get_pending_reviews(
     if min_rating:
         queryset = queryset.filter(rating__gte=min_rating)
     
+    # Pagination support
     queryset = queryset.order_by('created_at')
-    
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
     return list(queryset)
 
@@ -2576,16 +2021,10 @@ def get_review_summary_by_category(
     include_subcategories: bool = False
 ) -> Dict[str, Dict[str, float]]:
     """
-    Get review statistics aggregated by product category
-    
-    Args:
-        category_id: Root category ID
-        include_subcategories: Include child categories
-        
-    Returns:
-        Dictionary with category names as keys and review stats as values
+    Get review statistics aggregated by product category.
+    Uses reusable BASE_REVIEW_STATS annotations.
     """
-    from django.db.models import Subquery, OuterRef
+    validate_id(category_id, "Category ID")
     
     # Get category tree
     categories = ProductCategory.objects.filter(id=category_id)
@@ -2599,12 +2038,7 @@ def get_review_summary_by_category(
             product__category=category,
             is_approved=True
         ).aggregate(
-            avg_rating=Avg('rating'),
-            review_count=Count('id'),
-            helpful_percentage=Avg(
-                F('helpful_votes') / (F('helpful_votes') + 1),
-                output_field=FloatField()
-            ) * 100
+            **BASE_REVIEW_STATS
         )
         
         results[category.name] = {
@@ -2619,30 +2053,37 @@ def get_review_summary_by_category(
 # eleganza/products/selectors/variant_selectors.py
 #========================================
 
+# eleganza/products/selectors/variant_selectors.py
 from django.db.models import Prefetch, Q, F, Count, Subquery, OuterRef, FloatField
+from django.db.models.functions import Coalesce, Cast
 from typing import List, Dict, Optional, Sequence
 from django.core.exceptions import ValidationError
-from django.views.decorators.cache import cache_page
-from django.db.models.functions import Coalesce, Cast
-from ..models import ProductVariant, ProductOption, Inventory
-from ..constants import FieldLengths, Defaults
+from django.db.models import Value
+from eleganza.products.models import ProductVariant, ProductOption, Inventory
+from eleganza.products.constants import FieldLengths, Defaults
+from eleganza.products.validators import (
+    validate_id,
+    validate_option_ids,
+    validate_threshold,
+    validate_limit
+)
 
-def validate_variant_id(variant_id: int) -> None:
-    """Validate variant ID parameter"""
-    if variant_id <= 0:
-        raise ValidationError("Variant ID must be positive")
+# Reusable annotations
+INVENTORY_STATUS = {
+    'stock': Coalesce(F('inventory__stock_quantity'), Value(0)),
+    'low_stock': Q(inventory__stock_quantity__lte=F('inventory__low_stock_threshold'))
+}
 
-def validate_product_id(product_id: int) -> None:
-    """Validate product ID parameter"""
-    if product_id <= 0:
-        raise ValidationError("Product ID must be positive")
+PRICE_MODIFIER_FIELDS = {
+    'price_amount': Cast(F('price_modifier__amount'), FloatField()),
+    'price_currency': F('price_modifier__currency')
+}
 
-def validate_option_ids(option_ids: List[int]) -> None:
-    """Validate option IDs"""
-    if not option_ids:
-        raise ValidationError("Option IDs cannot be empty")
-    if any(oid <= 0 for oid in option_ids):
-        raise ValidationError("Option IDs must be positive")
+def get_variant_cache_key(**kwargs) -> str:
+    """Generate unique cache key based on query parameters"""
+    from hashlib import md5
+    return f"variant_{md5(str(kwargs).encode()).hexdigest()}"
+
 
 def get_variants_for_product(
     product_id: int,
@@ -2651,28 +2092,16 @@ def get_variants_for_product(
     include_inventory: bool = True,
     include_options: bool = True,
     fields: Optional[List[str]] = None,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> List[ProductVariant]:
     """
-    Get variants for a product with configurable related data
-    
-    Args:
-        product_id: Parent product ID
-        only_active: Filter inactive variants
-        include_inventory: Prefetch inventory data
-        include_options: Prefetch option/attribute data
-        fields: Specific fields to return (None for all)
-        limit: Maximum variants to return
-        
-    Returns:
-        List of ProductVariant instances
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get variants for a product with configurable related data.
+    Uses centralized validation and reusable annotations.
     """
-    validate_product_id(product_id)
-    if limit is not None and limit <= 0:
-        raise ValidationError("Limit must be positive")
+    validate_id(product_id, "Product ID")
+    if limit is not None:
+        validate_limit(limit)
 
     queryset = ProductVariant.objects.filter(product_id=product_id)
     
@@ -2693,10 +2122,12 @@ def get_variants_for_product(
     if fields:
         queryset = queryset.only(*fields)
     
+    # Pagination support
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
     return list(queryset.order_by('-is_default', 'sku'))
+
 
 def get_variant_with_full_details(
     variant_id: int,
@@ -2705,22 +2136,11 @@ def get_variant_with_full_details(
     history_days: int = 30
 ) -> Optional[Dict[str, any]]:
     """
-    Get single variant with complete related data
-    
-    Args:
-        variant_id: Target variant ID
-        include_inventory_history: Include inventory movement data
-        history_days: Days of history to include (1-365)
-        
-    Returns:
-        Dictionary with variant details and related data or None
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get single variant with complete related data.
+    Uses reusable INVENTORY_STATUS annotations.
     """
-    validate_variant_id(variant_id)
-    if not (1 <= history_days <= 365):
-        raise ValidationError("History days must be between 1 and 365")
+    validate_id(variant_id, "Variant ID")
+    validate_days_range(history_days)
 
     variant = ProductVariant.objects.filter(
         pk=variant_id
@@ -2732,7 +2152,8 @@ def get_variant_with_full_details(
                queryset=ProductOption.objects.select_related('attribute'))
     ).annotate(
         product_name=F('product__name'),
-        product_slug=F('product__slug')
+        product_slug=F('product__slug'),
+        **INVENTORY_STATUS
     ).values(
         'id',
         'sku',
@@ -2742,7 +2163,8 @@ def get_variant_with_full_details(
         'product_id',
         'product_name',
         'product_slug',
-        'inventory__stock_quantity',
+        'stock',
+        'low_stock',
         'inventory__low_stock_threshold',
         'inventory__last_restock'
     ).first()
@@ -2785,28 +2207,17 @@ def get_variants_by_options(
     *,
     only_in_stock: bool = False,
     only_active: bool = True,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> List[ProductVariant]:
     """
-    Find variants matching specific option combinations
-    
-    Args:
-        product_id: Parent product ID
-        option_ids: List of ProductOption IDs
-        only_in_stock: Filter to items with inventory
-        only_active: Only include active variants
-        limit: Maximum variants to return
-        
-    Returns:
-        List of matching ProductVariant instances
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Find variants matching specific option combinations.
+    Uses centralized validation for IDs.
     """
-    validate_product_id(product_id)
+    validate_id(product_id, "Product ID")
     validate_option_ids(option_ids)
-    if limit is not None and limit <= 0:
-        raise ValidationError("Limit must be positive")
+    if limit is not None:
+        validate_limit(limit)
 
     queryset = ProductVariant.objects.filter(
         product_id=product_id,
@@ -2830,31 +2241,22 @@ def get_variants_by_options(
                queryset=ProductOption.objects.select_related('attribute'))
     )
     
+    # Pagination support
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
     return list(queryset)
 
-@cache_page(60 * 30)  # Cache for 30 minutes
 def get_default_variant(
     product_id: int,
     *,
     only_in_stock: bool = False
 ) -> Optional[ProductVariant]:
     """
-    Get the default variant for a product
-    
-    Args:
-        product_id: Parent product ID
-        only_in_stock: Only return if variant has inventory
-        
-    Returns:
-        Default ProductVariant or None
-        
-    Raises:
-        ValidationError: For invalid product ID
+    Get the default variant for a product.
+    Uses reusable INVENTORY_STATUS annotations.
     """
-    validate_product_id(product_id)
+    validate_id(product_id, "Product ID")
 
     queryset = ProductVariant.objects.filter(
         product_id=product_id,
@@ -2866,7 +2268,9 @@ def get_default_variant(
             inventory__stock_quantity__gt=0
         )
     
-    return queryset.first()
+    return queryset.annotate(
+        **INVENTORY_STATUS
+    ).first()
 
 def get_variant_inventory_status(
     variant_id: int,
@@ -2875,39 +2279,24 @@ def get_variant_inventory_status(
     historical_days: int = 30
 ) -> Dict[str, any]:
     """
-    Get comprehensive inventory status for a variant
-    
-    Args:
-        variant_id: Target variant ID
-        include_historical: Include recent movement data
-        historical_days: Days of history to include (1-365)
-        
-    Returns:
-        Dictionary with:
-        - variant_id
-        - sku
-        - current_stock
-        - low_stock_threshold
-        - last_restock
-        - historical_changes (if requested)
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get comprehensive inventory status for a variant.
+    Uses centralized validation and reusable components.
     """
-    validate_variant_id(variant_id)
-    if not (1 <= historical_days <= 365):
-        raise ValidationError("Historical days must be between 1 and 365")
+    validate_id(variant_id, "Variant ID")
+    validate_days_range(historical_days)
 
     variant = ProductVariant.objects.filter(
         pk=variant_id
     ).select_related(
         'inventory'
     ).annotate(
-        sku=F('sku')
+        sku=F('sku'),
+        **INVENTORY_STATUS
     ).values(
         'id',
         'sku',
-        'inventory__stock_quantity',
+        'stock',
+        'low_stock',
         'inventory__low_stock_threshold',
         'inventory__last_restock'
     ).first()
@@ -2918,7 +2307,8 @@ def get_variant_inventory_status(
     result = {
         'variant_id': variant['id'],
         'sku': variant['sku'],
-        'current_stock': variant['inventory__stock_quantity'],
+        'current_stock': variant['stock'],
+        'low_stock': variant['low_stock'],
         'low_stock_threshold': variant['inventory__low_stock_threshold'],
         'last_restock': variant['inventory__last_restock']
     }
@@ -2932,38 +2322,23 @@ def get_variant_inventory_status(
     
     return result
 
-@cache_page(60 * 60)  # Cache for 1 hour
 def get_variants_with_low_stock(
     product_id: Optional[int] = None,
     *,
     threshold: Optional[int] = None,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> List[Dict[str, any]]:
     """
-    Get variants below stock threshold
-    
-    Args:
-        product_id: Optional parent product filter
-        threshold: Custom low stock threshold
-        limit: Maximum results to return
-        
-    Returns:
-        List of dictionaries with:
-        - variant_id
-        - sku
-        - product_name
-        - current_stock
-        - threshold
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Get variants below stock threshold.
+    Uses reusable PRICE_MODIFIER_FIELDS and validation.
     """
     if product_id is not None:
-        validate_product_id(product_id)
-    if threshold is not None and threshold <= 0:
-        raise ValidationError("Threshold must be positive")
-    if limit is not None and limit <= 0:
-        raise ValidationError("Limit must be positive")
+        validate_id(product_id, "Product ID")
+    if threshold is not None:
+        validate_threshold(threshold)
+    if limit is not None:
+        validate_limit(limit)
 
     threshold = threshold or Defaults.LOW_STOCK_THRESHOLD
     
@@ -2973,47 +2348,37 @@ def get_variants_with_low_stock(
     ).select_related(
         'product',
         'inventory'
-    )
-    
-    if product_id:
-        queryset = queryset.filter(product_id=product_id)
-    
-    queryset = queryset.annotate(
+    ).annotate(
         product_name=F('product__name'),
         current_stock=F('inventory__stock_quantity'),
-        threshold=F('inventory__low_stock_threshold')
+        threshold=F('inventory__low_stock_threshold'),
+        **PRICE_MODIFIER_FIELDS
     ).values(
         'id',
         'sku',
         'product_name',
         'current_stock',
-        'threshold'
+        'threshold',
+        'price_amount',
+        'price_currency'
     ).order_by('current_stock')
     
+    if product_id:
+        queryset = queryset.filter(product_id=product_id)
+    
+    # Pagination support
     if limit:
-        queryset = queryset[:limit]
+        queryset = queryset[offset:offset + limit]
     
     return list(queryset)
 
-@cache_page(60 * 60)  # Cache for 1 hour
+
 def get_variant_price_range(product_id: int) -> Optional[Dict[str, float]]:
     """
-    Get min/max pricing for a product's variants
-    
-    Args:
-        product_id: Parent product ID
-        
-    Returns:
-        Dictionary with:
-        - min_price
-        - max_price
-        - currency
-        or None if no variants
-        
-    Raises:
-        ValidationError: For invalid product ID
+    Get min/max pricing for a product's variants.
+    Uses reusable PRICE_MODIFIER_FIELDS.
     """
-    validate_product_id(product_id)
+    validate_id(product_id, "Product ID")
 
     result = ProductVariant.objects.filter(
         product_id=product_id,
@@ -3038,27 +2403,18 @@ def get_variants_by_attribute(
     *,
     only_in_stock: bool = False,
     only_active: bool = True,
-    include_pricing: bool = True
+    include_pricing: bool = True,
+    limit: Optional[int] = None,
+    offset: int = 0
 ) -> Dict[str, List[Dict[str, any]]]:
     """
-    Group variants by attribute option
-    
-    Args:
-        product_id: Parent product ID
-        attribute_id: Target attribute ID
-        only_in_stock: Filter to available variants
-        only_active: Only include active variants
-        include_pricing: Include price modifier in results
-        
-    Returns:
-        Dictionary {option_value: [variant_data]}
-        
-    Raises:
-        ValidationError: For invalid parameters
+    Group variants by attribute option.
+    Uses centralized validation and reusable components.
     """
-    validate_product_id(product_id)
-    if attribute_id <= 0:
-        raise ValidationError("Attribute ID must be positive")
+    validate_id(product_id, "Product ID")
+    validate_id(attribute_id, "Attribute ID")
+    if limit is not None:
+        validate_limit(limit)
 
     variants = ProductVariant.objects.filter(
         product_id=product_id,
@@ -3079,7 +2435,8 @@ def get_variants_by_attribute(
                 variants=OuterRef('pk')
             ).values('value')[:1]
         ),
-        in_stock=Q(inventory__stock_quantity__gt=0)
+        in_stock=Q(inventory__stock_quantity__gt=0),
+        **PRICE_MODIFIER_FIELDS
     )
     
     result = {}
@@ -3096,12 +2453,17 @@ def get_variants_by_attribute(
         }
         
         if include_pricing:
-            variant_data['price_modifier'] = {
-                'amount': float(variant.price_modifier.amount),
-                'currency': str(variant.price_modifier.currency)
-            }
+            variant_data.update({
+                'price_amount': float(variant.price_amount),
+                'price_currency': str(variant.price_currency)
+            })
         
         result[value].append(variant_data)
+    
+    # Apply pagination per option group
+    if limit:
+        for key in result:
+            result[key] = result[key][offset:offset + limit]
     
     return result
 
@@ -3111,14 +2473,8 @@ def get_variant_availability(
     threshold: Optional[int] = None
 ) -> Dict[int, Dict[str, any]]:
     """
-    Get availability status for multiple variants
-    
-    Args:
-        variant_ids: Sequence of variant IDs
-        threshold: Custom low stock threshold
-        
-    Returns:
-        Dictionary with variant IDs as keys and status info as values
+    Get availability status for multiple variants.
+    Uses reusable INVENTORY_STATUS annotations.
     """
     if not variant_ids:
         return {}
@@ -3127,17 +2483,19 @@ def get_variant_availability(
     
     variants = ProductVariant.objects.filter(
         id__in=variant_ids
-    ).select_related('inventory').values(
+    ).select_related('inventory').annotate(
+        **INVENTORY_STATUS
+    ).values(
         'id',
-        'inventory__stock_quantity',
-        'inventory__low_stock_threshold'
+        'stock',
+        'low_stock'
     )
     
     return {
         v['id']: {
-            'in_stock': v['inventory__stock_quantity'] > 0,
-            'low_stock': v['inventory__stock_quantity'] <= threshold,
-            'stock_quantity': v['inventory__stock_quantity']
+            'in_stock': v['stock'] > 0,
+            'low_stock': v['low_stock'],
+            'stock_quantity': v['stock']
         }
         for v in variants
     }

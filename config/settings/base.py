@@ -402,26 +402,4 @@ SOCIALACCOUNT_PROVIDERS = {
 }
 
 
-#------------------------------------------------------------------------------------
-# Currency configuration
-
-CURRENCY_CHOICES = [('LYD', _('Libyan Dinar'))] # Add more currencies as needed
-DEFAULT_CURRENCY = "LYD" # Set the default currency
-
-#------------------------------------------------------------------------------------
-
-
-
-
-#------------------------------------------------------------------------------------
-# Security Settings
-PASSWORD_HISTORY_LIMIT = 5  # Number of previous passwords to remember
-
-#------------------------------------------------------------------------------------
-
-
-#------------------------------------------------------------------------------------
-# Stock Reservation Settings
-STOCK_RESERVATION_DURATION_MINUTES = 30  # 30min default, adjustable as needed
-#------------------------------------------------------------------------------------
 

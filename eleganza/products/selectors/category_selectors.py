@@ -1,13 +1,12 @@
-# eleganza/products/selectors/category_selectors.py
 from django.db.models import Prefetch, Count, Q
 from typing import List, Dict, Optional, Iterable
 from collections import defaultdict
-from django.views.decorators.cache import cache_page
 from django.db.models import Value, F
 from django.db.models.functions import Coalesce
 from eleganza.products.models import ProductCategory, Product
 from eleganza.products.constants import FieldLengths
 from eleganza.products.validators import validate_id, validate_category_depth
+from django.core.exceptions import ValidationError
 
 # Reusable annotation for active product count
 ACTIVE_PRODUCTS_COUNT = Count(
@@ -78,7 +77,7 @@ def get_category_tree(
     
     return list(queryset)
 
-@cache_page(60 * 15, key_prefix="category_products_map")  # Unique cache key
+
 def get_category_products_map() -> Dict[str, List[int]]:
     """
     Get mapping of category slugs to active product IDs.
