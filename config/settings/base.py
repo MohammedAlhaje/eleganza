@@ -89,6 +89,8 @@ THIRD_PARTY_APPS = [
     "phonenumber_field",
     "allauth.socialaccount.providers.google",
     "allauth.socialaccount.providers.facebook",
+    'nested_admin',
+    'import_export',
 ]
 
 LOCAL_APPS = [
@@ -400,24 +402,4 @@ SOCIALACCOUNT_PROVIDERS = {
 }
 
 
-#------------------------------------------------------------------------------------
-# Currency configuration
-
-CURRENCY_CHOICES = [('LYD', _('Libyan Dinar'))] # Add more currencies as needed
-DEFAULT_CURRENCY = "LYD" # Set the default currency
-
-#------------------------------------------------------------------------------------
-
-
-
-
-#------------------------------------------------------------------------------------
-# Security Settings
-PASSWORD_HISTORY_LIMIT = 5  # Number of previous passwords to remember
-
-#------------------------------------------------------------------------------------
-
-
-
-FIELD_ENCRYPTION_KEY = env("FIELD_ENCRYPTION_KEY", default=None)
 

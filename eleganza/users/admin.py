@@ -7,7 +7,42 @@ from django.utils.safestring import mark_safe
 from django.db import models
 from django.urls import reverse
 from django.utils.html import format_html
-from .models import User, CustomerProfile, TeamMemberProfile, Address, PasswordHistory
+from .models import User, CustomerProfile, TeamMemberProfile, Address, PasswordHistory,ContactMethod
+
+
+@admin.register(ContactMethod)
+class ContactMethodAdmin(admin.ModelAdmin):
+    list_display = ('name', 'code', 'is_active', 'created_at')
+    list_filter = ('is_active',)
+    search_fields = ('name', 'code')
+    prepopulated_fields = {'code': ('name',)}  # Auto-slug on add
+    list_editable = ('is_active',)
+    ordering = ('name',)
+    date_hierarchy = 'created_at'
+    
+    fieldsets = (
+        (None, {
+            'fields': ('name', 'code', 'is_active')
+        }),
+        (_('Metadata'), {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    readonly_fields = ('created_at', 'updated_at')
+
+    def get_readonly_fields(self, request, obj=None):
+        """Make code read-only ONLY during editing"""
+        if obj:  # Existing object
+            return self.readonly_fields + ('code',)
+        return self.readonly_fields
+
+    def get_prepopulated_fields(self, request, obj=None):
+        """Only enable auto-slug when creating new objects"""
+        if obj:  # Editing existing
+            return {}
+        return {'code': ('name',)}
+
 
 class AdminImageWidget(AdminFileWidget):
     def render(self, name, value, attrs=None, renderer=None):
