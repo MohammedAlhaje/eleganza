@@ -7,7 +7,7 @@ from eleganza.core.models import BaseModel
 from ..constants import (
     ImageConstants,
 )
-from .product import Product, ProductVariant
+from .product_model import Product, ProductVariant
 
 
 class ProductImage(BaseModel):
@@ -50,9 +50,14 @@ class ProductImage(BaseModel):
         ordering = ['-is_primary', 'sort_order']
         constraints = [
             CheckConstraint(
-                check=Q(product__isnull=False) | Q(variant__isnull=False),
-                name='image_must_link_to_product_or_variant'
-            )
+                # Check that either product or variant is set, but not both
+                # This is a custom constraint to ensure that an image is linked to either a product or a variant, but not both.
+                check=(
+                    (Q(product__isnull=False) & Q(variant__isnull=True)) |
+                    (Q(product__isnull=True) & Q(variant__isnull=False))
+                ),
+                name='product_xor_variant'
+            ),
         ]
 
     def clean(self):

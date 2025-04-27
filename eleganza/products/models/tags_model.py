@@ -6,7 +6,7 @@ from ..constants import (
     FieldLimits,
     ValidationPatterns,
 )
-from .product import Product
+from .product_model import Product
 
 class Tag(BaseModel):
     """Flexible product tagging system"""

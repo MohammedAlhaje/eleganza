@@ -6,10 +6,11 @@ from ..constants import (
     FieldLimits,
     ValidationPatterns,
 )
-from .product import Product
+from .product_model import Product
 
 class ProductReview(BaseModel):
     """Customer review and rating system"""
+
     product = models.ForeignKey(
         Product,
         on_delete=models.CASCADE,
@@ -45,6 +46,12 @@ class ProductReview(BaseModel):
         default=False,
         db_index=True
     )
+    helpful_count = models.PositiveIntegerField(
+        _("Helpful Count"),
+        default=0,
+        editable=False,
+        help_text=_("Number of users who found this review helpful.")
+    )
 
     class Meta:
         unique_together = ('product', 'user')
@@ -55,3 +62,25 @@ class ProductReview(BaseModel):
     def __str__(self):
         return f"{self.user.username}'s review of {self.product.name}"
 
+class ReviewVote(BaseModel):
+    """Tracks user votes on reviews"""
+    review = models.ForeignKey(
+        ProductReview,
+        on_delete=models.CASCADE,
+        related_name='votes',
+        verbose_name=_("Review")
+    )
+    user = models.ForeignKey(
+        'users.User',
+        on_delete=models.CASCADE,
+        related_name='review_votes',
+        verbose_name=_("User")
+    )
+
+    class Meta:
+        unique_together = ('review', 'user')  # Prevents duplicate votes
+        verbose_name = _("Review Vote")
+        verbose_name_plural = _("Review Votes")
+
+    def __str__(self):
+        return f"{self.user.username} voted on {self.review.title}"

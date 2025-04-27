@@ -14,7 +14,7 @@ class ProductCategory(BaseModel):
     name = models.CharField(
         _("Name"),
         max_length=FieldLimits.CATEGORY_NAME,
-        unique=True,
+        db_index=True,
         validators=[
             RegexValidator(
                 ValidationPatterns.PRODUCT_NAME,
@@ -26,7 +26,9 @@ class ProductCategory(BaseModel):
         'self',
         on_delete=models.SET_NULL,
         null=True,
-        blank=True,
+        blank=False,
+        unique=True,
+        db_index=True,
         related_name='children',
         verbose_name=_("Parent Category")
     )
@@ -50,12 +52,6 @@ class ProductCategory(BaseModel):
     class Meta:
         verbose_name = _("Product Category")
         verbose_name_plural = _("Product Categories")
-        constraints = [
-            UniqueConstraint(
-                fields=['parent', 'name'],
-                name='unique_category_name_per_parent'
-            )
-        ]
 
     def __str__(self):
         return self.name

@@ -6,7 +6,7 @@ from ..constants import (
     FieldLimits,
     ValidationPatterns,
 )
-from .category import ProductCategory
+from .category_model import ProductCategory
 
 class ProductAttribute(BaseModel):
     """Defines product attributes like size, color, etc."""
@@ -28,7 +28,7 @@ class ProductAttribute(BaseModel):
     )
     is_required = models.BooleanField(
         _("Required"),
-        default=True
+        default=False
     )
 
     class Meta:
@@ -117,7 +117,7 @@ class Product(BaseModel):
         ProductCategory,
         on_delete=models.SET_NULL,
         null=True,
-        blank=True,
+        blank=False,
         related_name='products',
         verbose_name=_("Category")
     )
@@ -126,11 +126,6 @@ class Product(BaseModel):
         related_name='products',
         blank=True,
         verbose_name=_("Attributes")
-    )
-    is_featured = models.BooleanField(
-        _("Featured"),
-        default=False,
-        db_index=True
     )
     status = models.CharField(
         _("Status"),
@@ -158,7 +153,6 @@ class Product(BaseModel):
         indexes = [
             models.Index(fields=['sku']),
             models.Index(fields=['name']),
-            models.Index(fields=['is_featured']),
             models.Index(fields=['average_rating']),
         ]
 

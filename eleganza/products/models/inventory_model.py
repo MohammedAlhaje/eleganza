@@ -5,7 +5,7 @@ from eleganza.core.models import BaseModel
 from eleganza.products.constants import (
     InventoryConstants
 )
-from .product import ProductVariant
+from .product_model import ProductVariant
 
 class Inventory(BaseModel):
     """Real-time stock tracking system"""
@@ -37,7 +37,12 @@ class Inventory(BaseModel):
         return f"Inventory for {self.variant.sku}"
 
 class InventoryHistory(models.Model):
-    """Complete audit trail of stock movements"""
+    class ChangeType(models.TextChoices):
+        SALE = 'sale', _("Sale")
+        RESTOCK = 'restock', _("Restock")
+        ADJUSTMENT = 'adjustment', _("Manual Adjustment")
+        RETURN = 'return', _("Customer Return")
+    
     inventory = models.ForeignKey(
         Inventory,
         on_delete=models.CASCADE,
@@ -46,6 +51,13 @@ class InventoryHistory(models.Model):
     )
     old_stock = models.IntegerField(_("Previous Stock"))
     new_stock = models.IntegerField(_("New Stock"))
+    change_type = models.CharField(
+        _("Change Type"),
+        max_length=20,
+        choices=ChangeType.choices,
+        default=ChangeType.ADJUSTMENT,
+        db_index=True
+    )
     timestamp = models.DateTimeField(
         _("Timestamp"),
         auto_now_add=True
@@ -63,3 +75,4 @@ class InventoryHistory(models.Model):
 
     def __str__(self):
         return f"Stock change for {self.inventory.variant.sku}"
+

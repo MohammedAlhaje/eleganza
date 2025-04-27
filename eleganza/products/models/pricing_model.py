@@ -9,23 +9,23 @@ from ..constants import (
     PricingConstants,
     CurrencyConstants,
 )
-from .product import Product, ProductVariant
-from .category import ProductCategory
+from .product_model import Product, ProductVariant
+from .category_model import ProductCategory
 
 # region Pricing System
 class ProductPrice(BaseModel):
-    """Temporal pricing system with currency support"""
-    product = models.OneToOneField(
+    """Temporal pricing system with currency support (supports price history)."""
+    product = models.ForeignKey(
         Product,
         on_delete=models.CASCADE,
-        related_name='price',
+        related_name='prices',
         null=True,
         blank=True
     )
-    variant = models.OneToOneField(
+    variant = models.ForeignKey(
         ProductVariant,
         on_delete=models.CASCADE,
-        related_name='price',
+        related_name='prices',
         null=True,
         blank=True
     )
@@ -59,16 +59,6 @@ class ProductPrice(BaseModel):
                 check=Q(product__isnull=True) | Q(variant__isnull=True),
                 name='price_exclusive_product_or_variant'
             ),
-            UniqueConstraint(
-                fields=['product'],
-                name='unique_product_price',
-                condition=Q(variant__isnull=True)
-            ),
-            UniqueConstraint(
-                fields=['variant'],
-                name='unique_variant_price',
-                condition=Q(product__isnull=True)
-            ),
             CheckConstraint(
                 check=Q(valid_until__gt=models.F('valid_from')) | Q(valid_until__isnull=True),
                 name='valid_price_period'
@@ -87,19 +77,20 @@ class ProductPrice(BaseModel):
         target = self.product or self.variant
         return f"{target.name} - {self.amount} {self.currency}"
 
+
 class CostPrice(BaseModel):
     """Product cost tracking with vendor relationships"""
-    product = models.OneToOneField(
+    product = models.ForeignKey(
         Product,
         on_delete=models.CASCADE,
-        related_name='cost',
+        related_name='costs',
         null=True,
         blank=True
     )
-    variant = models.OneToOneField(
+    variant = models.ForeignKey(
         ProductVariant,
         on_delete=models.CASCADE,
-        related_name='cost',
+        related_name='costs',
         null=True,
         blank=True
     )
@@ -131,9 +122,16 @@ class CostPrice(BaseModel):
             )
         ]
 
+    def clean(self):
+        if not (self.product or self.variant):
+            raise ValidationError(_("Cost must be linked to a product or variant"))
+        if self.product and self.variant:
+            raise ValidationError(_("Cannot link cost to both product and variant"))
+
     def __str__(self):
         target = self.product or self.variant
         return f"Cost for {target.name}: {self.amount}"
+
 
 class Discount(BaseModel):
     """Advanced discount system with multiple applicability rules"""
