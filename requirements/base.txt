@@ -17,7 +17,7 @@ django-environ==0.12.0  # Environment variable handling (https://github.com/joke
 django-model-utils==5.0.0  # Model utilities (https://github.com/jazzband/django-model-utils)
 django-allauth[mfa]==65.5.0  # Authentication framework (https://github.com/pennersr/django-allauth)
 django-crispy-forms==2.3  # Form layout management (https://github.com/django-crispy-forms/django-crispy-forms)
-crispy-bootstrap5==2024.10  # Bootstrap 5 support for crispy-forms (https://github.com/django-crispy-forms/crispy-bootstrap5)
+crispy-bootstrap5==2025.6  # Bootstrap 5 support for crispy-forms (https://github.com/django-crispy-forms/crispy-bootstrap5)
 django-compressor==4.5.1  # Compresses CSS/JS files (https://github.com/django-compressor/django-compressor)
 django-redis==5.4.0  # Redis cache backend for Django (https://github.com/jazzband/django-redis)
 
