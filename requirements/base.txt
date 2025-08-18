@@ -3,7 +3,7 @@ Pillow==11.1.0  # Image processing library (https://github.com/python-pillow/Pil
 rcssmin==1.1.2  # CSS minification for Django Compressor (https://github.com/ndparker/rcssmin)
 argon2-cffi==23.1.0  # Password hashing library (https://github.com/hynek/argon2_cffi)
 whitenoise==6.9.0  # Serve static files in Django (https://github.com/evansd/whitenoise)
-redis==5.2.1  # Python client for Redis (https://github.com/redis/redis-py)
+redis==6.4.0  # Python client for Redis (https://github.com/redis/redis-py)
 hiredis==3.1.0  # Optimized Redis parser (https://github.com/redis/hiredis-py)
 celery==5.4.0  # Distributed task queue (https://github.com/celery/celery)
 django-celery-beat==2.7.0  # Periodic task scheduler for Celery (https://github.com/celery/django-celery-beat)
